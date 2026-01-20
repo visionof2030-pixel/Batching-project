@@ -1,21 +1,34 @@
-import uuid, datetime
+import uuid
+import datetime
 from database import SessionLocal, LicenseKey
 
-db = SessionLocal()
+def create_license(days=30, max_requests=1000):
+    db = SessionLocal()
 
-def create_key(days=30, max_requests=500):
-    key = str(uuid.uuid4()).replace("-", "").upper()
-    expires = datetime.datetime.utcnow() + datetime.timedelta(days=days)
+    key_value = str(uuid.uuid4()).replace("-", "").upper()
+    expires_at = datetime.datetime.utcnow() + datetime.timedelta(days=days)
 
-    lk = LicenseKey(
-        key=key,
-        expires_at=expires,
-        max_requests=max_requests
+    license_key = LicenseKey(
+        key=key_value,
+        expires_at=expires_at,
+        max_requests=max_requests,
+        used_requests=0,
+        is_active=True
     )
-    db.add(lk)
+
+    db.add(license_key)
     db.commit()
-    return key
+    db.close()
+
+    return key_value, expires_at, max_requests
 
 if __name__ == "__main__":
-    new_key = create_key(days=30, max_requests=1000)
-    print("NEW LICENSE KEY:", new_key)
+    key, exp, limit = create_license(
+        days=30,          # مدة الاشتراك
+        max_requests=1000 # عدد الطلبات المسموح
+    )
+
+    print("✅ تم إنشاء مفتاح جديد")
+    print("🔑 المفتاح:", key)
+    print("📅 ينتهي في:", exp)
+    print("📊 الحد الأقصى:", limit)
