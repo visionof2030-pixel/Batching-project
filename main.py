@@ -1,22 +1,16 @@
-import os
-import json
-import math
-import itertools
+import os, json, math, itertools
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import google.generativeai as genai
 
-# ================== إعدادات عامة ==================
 MODEL = "gemini-2.5-flash-lite"
-BATCH_SIZE = 10          # عدد الأسئلة لكل دفعة
-MAX_RETRY = 3            # عدد المحاولات لكل دفعة
-MAX_TOTAL = 200          # الحد الأعلى المسموح
+BATCH_SIZE = 10
+MAX_RETRY = 3
+MAX_TOTAL = 200
 
-# ================== مفاتيح Gemini ==================
 keys = [os.getenv(f"GEMINI_KEY_{i}") for i in range(1, 12)]
 keys = [k for k in keys if k]
-
 if not keys:
     raise RuntimeError("No Gemini API keys found")
 
@@ -26,11 +20,7 @@ def get_model():
     genai.configure(api_key=next(key_cycle))
     return genai.GenerativeModel(MODEL)
 
-# ================== أدوات مساعدة ==================
 def safe_json(text: str):
-    """
-    استخراج JSON آمن من رد النموذج
-    """
     try:
         start = text.find("{")
         end = text.rfind("}") + 1
@@ -38,43 +28,68 @@ def safe_json(text: str):
     except:
         return None
 
-def lang_instruction(lang: str):
+def lang_instruction(lang):
     return (
         "Write the final output in clear academic English."
         if lang == "en"
         else "اكتب الناتج النهائي باللغة العربية الفصحى الواضحة."
     )
 
-def build_prompt(topic: str, lang: str, count: int):
+def build_quiz_prompt(topic, lang, count):
     return f"""
 {lang_instruction(lang)}
 
 أنشئ {count} سؤال اختيار من متعدد من الموضوع التالي.
 
 قواعد صارمة:
-- 4 خيارات فقط لكل سؤال
-- شرح موسع وعميق للإجابة الصحيحة
-- شرح مختصر وواضح لكل خيار خاطئ
-- لا تكرر الأفكار أو الأسئلة
-- أعد JSON فقط بدون أي نص إضافي
+- 4 خيارات فقط
+- شرح موسع للإجابة الصحيحة
+- شرح مختصر لكل خيار خاطئ
+- لا تكرر الأفكار
+- أعد JSON فقط
 
 الصيغة:
 {{
-  "questions": [
-    {{
-      "q": "",
-      "options": ["", "", "", ""],
-      "answer": 0,
-      "explanations": ["", "", "", ""]
-    }}
-  ]
+ "questions":[
+  {{
+   "q":"",
+   "options":["","","",""],
+   "answer":0,
+   "explanations":["","","",""]
+  }}
+ ]
 }}
 
 الموضوع:
 {topic}
 """
 
-# ================== FastAPI ==================
+def build_flash_prompt(topic, lang, count):
+    return f"""
+{lang_instruction(lang)}
+
+أنشئ {count} بطاقات تعليمية Flash Cards من الموضوع التالي.
+
+قواعد:
+- فكرة واحدة لكل بطاقة
+- صياغة تعليمية واضحة
+- لا تكرر
+- أعد JSON فقط
+
+الصيغة:
+{{
+ "cards":[
+  {{
+   "front":"",
+   "back":""
+  }}
+ ]
+}}
+
+الموضوع:
+{topic}
+"""
+
 app = FastAPI()
 
 app.add_middleware(
@@ -85,68 +100,68 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-class GenerateRequest(BaseModel):
+class QuizRequest(BaseModel):
     topic: str
     language: str = "ar"
     total_questions: int = 10
+
+class FlashRequest(BaseModel):
+    topic: str
+    language: str = "ar"
+    total_cards: int = 10
 
 @app.get("/")
 def root():
     return {"status": "ok"}
 
-# ================== Endpoint الرئيسي ==================
 @app.post("/generate/batch")
-def generate_batch(req: GenerateRequest):
+def generate_quiz(req: QuizRequest):
     total = min(max(req.total_questions, 1), MAX_TOTAL)
-
     batches = math.ceil(total / BATCH_SIZE)
     final_questions = []
 
-    for batch_index in range(batches):
+    for batch in range(batches):
         remaining = total - len(final_questions)
         if remaining <= 0:
             break
 
         needed = min(BATCH_SIZE, remaining)
-        success = False
 
         for attempt in range(MAX_RETRY):
             model = get_model()
-            prompt = build_prompt(req.topic, req.language, needed)
-
+            prompt = build_quiz_prompt(req.topic, req.language, needed)
             try:
-                response = model.generate_content(prompt)
-                data = safe_json(response.text)
-
+                r = model.generate_content(prompt)
+                data = safe_json(r.text)
                 if not data or "questions" not in data:
-                    raise ValueError("Invalid JSON returned")
+                    raise ValueError("Invalid JSON")
 
-                questions = data["questions"]
-                if not isinstance(questions, list) or len(questions) == 0:
-                    raise ValueError("Empty questions list")
-
-                # 🔒 قص صارم حسب العدد المتبقي
-                final_questions.extend(questions[:needed])
-                success = True
+                final_questions.extend(data["questions"][:needed])
                 break
-
-            except Exception as e:
+            except:
                 if attempt == MAX_RETRY - 1:
                     raise HTTPException(
                         status_code=500,
-                        detail=f"Batch {batch_index + 1} failed: {str(e)}"
+                        detail=f"Batch failed at {len(final_questions)}"
                     )
 
-        if not success:
-            break
-
-    # ================== تحقق نهائي ==================
     if len(final_questions) != total:
         raise HTTPException(
             status_code=500,
-            detail=f"Generated {len(final_questions)} questions out of {total}"
+            detail=f"Generated {len(final_questions)} of {total}"
         )
 
-    return {
-        "questions": final_questions
-    }
+    return {"questions": final_questions}
+
+@app.post("/generate/flashcards")
+def generate_flashcards(req: FlashRequest):
+    total = min(max(req.total_cards, 5), 60)
+    model = get_model()
+    prompt = build_flash_prompt(req.topic, req.language, total)
+    r = model.generate_content(prompt)
+    data = safe_json(r.text)
+
+    if not data or "cards" not in data:
+        raise HTTPException(status_code=500, detail="Invalid flashcards JSON")
+
+    return {"cards": data["cards"][:total]}
