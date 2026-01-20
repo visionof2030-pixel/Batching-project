@@ -1,14 +1,17 @@
-import os
 import json
 import math
+import time
 import itertools
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-import google.generativeai as genai
+import os
 
-MODEL_NAME = "gemini-2.5-flash-lite"
-BATCH_SIZE = 10
-MAX_RETRIES = 2
+import google.generativeai as genai
+from fastapi import HTTPException
+
+MODEL = "gemini-2.5-flash-lite"
+
+BATCH_SIZE = 20
+MAX_RETRY = 3
+RETRY_SLEEP_SECONDS = 8
 
 keys = [os.getenv(f"GEMINI_KEY_{i}") for i in range(1, 12)]
 keys = [k for k in keys if k]
@@ -17,16 +20,20 @@ if not keys:
 
 key_cycle = itertools.cycle(keys)
 
+
 def get_model():
     genai.configure(api_key=next(key_cycle))
-    return genai.GenerativeModel(MODEL_NAME)
+    return genai.GenerativeModel(MODEL)
 
-app = FastAPI()
 
-class QuizRequest(BaseModel):
-    topic: str
-    language: str = "ar"
-    total_questions: int = 10
+def safe_json(text: str):
+    try:
+        start = text.find("{")
+        end = text.rfind("}") + 1
+        return json.loads(text[start:end])
+    except Exception:
+        return None
+
 
 def lang_instruction(lang: str):
     return (
@@ -35,13 +42,6 @@ def lang_instruction(lang: str):
         else "اكتب الناتج النهائي باللغة العربية الفصحى الواضحة."
     )
 
-def extract_json(text: str):
-    try:
-        start = text.find("{")
-        end = text.rfind("}") + 1
-        return json.loads(text[start:end])
-    except:
-        return None
 
 def build_prompt(topic: str, lang: str, count: int):
     return f"""
@@ -51,10 +51,10 @@ def build_prompt(topic: str, lang: str, count: int):
 
 قواعد صارمة:
 - 4 خيارات لكل سؤال
-- خيار صحيح واحد فقط
-- شرح موسع للإجابة الصحيحة
+- شرح موسع وعميق للإجابة الصحيحة
 - شرح مختصر لكل خيار خاطئ
-- لا تكرر الأسئلة أو الأفكار
+- لا تكرر الأفكار
+- مستوى تعليمي واضح
 - أعد JSON فقط دون أي نص إضافي
 
 الصيغة:
@@ -73,40 +73,63 @@ def build_prompt(topic: str, lang: str, count: int):
 {topic}
 """
 
-@app.get("/")
-def root():
-    return {"status": "ok"}
 
-@app.post("/generate")
-def generate(req: QuizRequest):
-    total = min(max(req.total_questions, 1), 200)
-    batches = math.ceil(total / BATCH_SIZE)
+def generate_single_batch(topic: str, batch_size: int, language: str):
+    for attempt in range(MAX_RETRY):
+        try:
+            model = get_model()
+            prompt = build_prompt(topic, language, batch_size)
+            response = model.generate_content(prompt)
+            data = safe_json(response.text)
+
+            if not data or "questions" not in data:
+                raise ValueError("Invalid JSON returned")
+
+            questions = data["questions"]
+            if not isinstance(questions, list) or len(questions) < batch_size:
+                raise ValueError("Insufficient questions returned")
+
+            return questions[:batch_size]
+
+        except Exception:
+            if attempt == MAX_RETRY - 1:
+                raise
+            time.sleep(RETRY_SLEEP_SECONDS)
+
+    raise RuntimeError("Unreachable")
+
+
+def generate_questions(
+    topic: str,
+    total_questions: int,
+    language: str = "ar"
+):
+    total_questions = min(max(total_questions, 5), 200)
+
+    total_batches = math.ceil(total_questions / BATCH_SIZE)
     final_questions = []
 
-    for batch_index in range(batches):
-        needed = min(BATCH_SIZE, total - len(final_questions))
-        for attempt in range(MAX_RETRIES + 1):
-            try:
-                model = get_model()
-                prompt = build_prompt(req.topic, req.language, needed)
-                response = model.generate_content(prompt)
-                data = extract_json(response.text)
-                if not data or "questions" not in data:
-                    raise ValueError("Invalid JSON")
-                questions = data["questions"]
-                if len(questions) < needed:
-                    raise ValueError("Insufficient questions")
-                final_questions.extend(questions[:needed])
-                break
-            except Exception as e:
-                if attempt == MAX_RETRIES:
-                    raise HTTPException(
-                        status_code=500,
-                        detail=f"Batch {batch_index + 1} failed: {str(e)}"
-                    )
+    for batch_index in range(total_batches):
+        remaining = total_questions - len(final_questions)
+        current_batch_size = min(BATCH_SIZE, remaining)
+
+        try:
+            batch_questions = generate_single_batch(
+                topic=topic,
+                batch_size=current_batch_size,
+                language=language
+            )
+            final_questions.extend(batch_questions)
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Batch {batch_index + 1} failed: {str(e)}"
+            )
+
+        time.sleep(2)
 
     return {
-        "questions": final_questions[:total],
-        "count": len(final_questions[:total]),
-        "model": MODEL_NAME
+        "questions": final_questions[:total_questions],
+        "total": len(final_questions[:total_questions]),
+        "model": MODEL
     }
