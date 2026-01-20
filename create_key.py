@@ -1,19 +1,21 @@
-import secrets, datetime
-from database import SessionLocal, AccessKey
-from security import hash_key
+import uuid, datetime
+from database import SessionLocal, LicenseKey
 
 db = SessionLocal()
 
-plain_key = secrets.token_hex(16)
+def create_key(days=30, max_requests=500):
+    key = str(uuid.uuid4()).replace("-", "").upper()
+    expires = datetime.datetime.utcnow() + datetime.timedelta(days=days)
 
-key = AccessKey(
-    key_hash=hash_key(plain_key),
-    expires_at=datetime.datetime.utcnow() + datetime.timedelta(days=7),  # غيّرها متى شئت
-    is_active=True
-)
+    lk = LicenseKey(
+        key=key,
+        expires_at=expires,
+        max_requests=max_requests
+    )
+    db.add(lk)
+    db.commit()
+    return key
 
-db.add(key)
-db.commit()
-
-print("ACCESS KEY:", plain_key)
-print("EXPIRES AT:", key.expires_at)
+if __name__ == "__main__":
+    new_key = create_key(days=30, max_requests=1000)
+    print("NEW LICENSE KEY:", new_key)
