@@ -1,51 +1,71 @@
-import os, json, itertools, time
-import google.generativeai as genai
+import os
+import json
+import time
+import itertools
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+from dotenv import load_dotenv
+from google import genai
 
-app = FastAPI()
+load_dotenv()
 
-MODEL = "gemini-2.5-flash-lite"
-MAX_RETRY = 2
+# ================= CONFIG =================
+MODEL_NAME = "gemini-2.5-flash-lite"
+BATCH_SIZE = 10
+MAX_RETRIES = 2
+DELAY_BETWEEN_BATCHES = 2
+# ==========================================
 
-keys = [os.getenv(f"GEMINI_KEY_{i}") for i in range(1, 12)]
-keys = [k for k in keys if k]
-if not keys:
-    raise RuntimeError("No Gemini API keys found")
+# Load API Keys
+API_KEYS = [os.getenv(f"GEMINI_KEY_{i}") for i in range(1, 12)]
+API_KEYS = [k for k in API_KEYS if k]
 
-key_cycle = itertools.cycle(keys)
+if not API_KEYS:
+    raise RuntimeError("❌ No Gemini API keys found")
 
-def get_model():
-    genai.configure(api_key=next(key_cycle))
-    return genai.GenerativeModel(MODEL)
+key_cycle = itertools.cycle(API_KEYS)
 
-def safe_json(text: str):
+# ================= FASTAPI =================
+app = FastAPI(title="SmartTest API")
+
+# ================= MODELS =================
+class QuizRequest(BaseModel):
+    topic: str
+    language: str = "ar"
+    total_questions: int = 10
+
+# ================= GEMINI =================
+def get_client():
+    api_key = next(key_cycle)
+    return genai.Client(api_key=api_key)
+
+def extract_json(text: str):
     try:
-        start = text.find("{")
-        end = text.rfind("}") + 1
+        start = text.index("{")
+        end = text.rindex("}") + 1
         return json.loads(text[start:end])
     except:
         return None
 
-def lang_instruction(lang: str):
-    return (
-        "Write the final output in clear academic English."
+def build_prompt(topic: str, lang: str, count: int):
+    lang_line = (
+        "Write in clear academic English."
         if lang == "en"
-        else "اكتب الناتج النهائي باللغة العربية الفصحى."
+        else "اكتب باللغة العربية الفصحى."
     )
 
-def build_prompt(topic: str, lang: str, count: int):
     return f"""
-{lang_instruction(lang)}
+{lang_line}
 
-أنشئ {count} سؤال اختيار من متعدد من الموضوع التالي.
+أنشئ {count} سؤال اختيار من متعدد.
 
 قواعد صارمة:
 - 4 خيارات لكل سؤال
-- شرح موسع للإجابة الصحيحة
+- خيار صحيح واحد فقط
+- شرح للإجابة الصحيحة
 - شرح مختصر لكل خيار خاطئ
 - لا تكرر الأفكار
-- أعد JSON فقط
+- أعد JSON فقط بدون أي نص إضافي
 
 الصيغة:
 {{
@@ -63,35 +83,57 @@ def build_prompt(topic: str, lang: str, count: int):
 {topic}
 """
 
-class QuizRequest(BaseModel):
-    topic: str
-    language: str = "ar"
-    total_questions: int = 10
+def generate_batch(topic, lang, count):
+    for attempt in range(MAX_RETRIES + 1):
+        try:
+            client = get_client()
+            prompt = build_prompt(topic, lang, count)
 
+            response = client.models.generate_content(
+                model=MODEL_NAME,
+                contents=prompt
+            )
+
+            data = extract_json(response.text)
+            if not data or "questions" not in data:
+                raise ValueError("Invalid JSON")
+
+            return data["questions"][:count]
+
+        except Exception as e:
+            if attempt == MAX_RETRIES:
+                raise e
+            time.sleep(2)
+
+# ================= ROUTES =================
 @app.get("/")
 def root():
     return {"status": "ok"}
 
 @app.post("/generate")
-def generate(req: QuizRequest):
-    batch_size = min(max(req.total_questions, 5), 20)
+def generate_quiz(req: QuizRequest):
+    total = max(5, min(req.total_questions, 200))
+    all_questions = []
 
-    for attempt in range(MAX_RETRY + 1):
+    while len(all_questions) < total:
+        remaining = total - len(all_questions)
+        batch_count = min(BATCH_SIZE, remaining)
+
         try:
-            model = get_model()
-            prompt = build_prompt(req.topic, req.language, batch_size)
-            response = model.generate_content(prompt)
-            data = safe_json(response.text)
-
-            if not data or "questions" not in data:
-                raise ValueError("Invalid JSON")
-
-            return {"questions": data["questions"][:batch_size]}
+            batch = generate_batch(
+                topic=req.topic,
+                lang=req.language,
+                count=batch_count
+            )
+            all_questions.extend(batch)
+            time.sleep(DELAY_BETWEEN_BATCHES)
 
         except Exception as e:
-            if attempt == MAX_RETRY:
-                raise HTTPException(
-                    status_code=500,
-                    detail=str(e)
-                )
-            time.sleep(2)
+            raise HTTPException(
+                status_code=500,
+                detail=str(e)
+            )
+
+    return {
+        "questions": all_questions
+    }
