@@ -1,10 +1,8 @@
-# batching.py
-import json, math, itertools, os
+import json, itertools, os
 import google.generativeai as genai
 from fastapi import HTTPException
 
 MODEL = "gemini-2.5-flash-lite"
-BATCH_SIZE = 10
 MAX_RETRY = 2
 
 keys = [os.getenv(f"GEMINI_KEY_{i}") for i in range(1, 12)]
@@ -26,22 +24,25 @@ def safe_json(text: str):
     except:
         return None
 
-def build_prompt(topic: str, lang: str, count: int):
-    lang_line = (
+def lang_instruction(lang: str):
+    return (
         "Write the final output in clear academic English."
         if lang == "en"
         else "اكتب الناتج النهائي باللغة العربية الفصحى."
     )
+
+def build_prompt(topic: str, lang: str, count: int):
     return f"""
-{lang_line}
+{lang_instruction(lang)}
 
 أنشئ {count} سؤال اختيار من متعدد من الموضوع التالي.
 
 قواعد صارمة:
 - 4 خيارات لكل سؤال
-- شرح موسع للإجابة الصحيحة
+- شرح موسع وعميق للإجابة الصحيحة
 - شرح مختصر لكل خيار خاطئ
 - لا تكرر الأفكار
+- مستوى تعليمي واضح
 - أعد JSON فقط
 
 الصيغة:
@@ -60,31 +61,33 @@ def build_prompt(topic: str, lang: str, count: int):
 {topic}
 """
 
-def generate_questions_pro(topic, total_questions, language):
-    total_questions = min(max(total_questions, 5), 200)
-    batches = math.ceil(total_questions / BATCH_SIZE)
-    final_questions = []
+def generate_batch(
+    topic: str,
+    batch_size: int,
+    language: str
+):
+    batch_size = min(max(batch_size, 5), 20)
 
-    for _ in range(batches):
-        needed = min(BATCH_SIZE, total_questions - len(final_questions))
+    for attempt in range(MAX_RETRY + 1):
+        try:
+            model = get_model()
+            prompt = build_prompt(topic, language, batch_size)
+            response = model.generate_content(prompt)
+            data = safe_json(response.text)
 
-        for attempt in range(MAX_RETRY + 1):
-            try:
-                model = get_model()
-                prompt = build_prompt(topic, language, needed)
-                response = model.generate_content(prompt)
-                data = safe_json(response.text)
+            if not data or "questions" not in data:
+                raise ValueError("Invalid JSON from model")
 
-                if not data or "questions" not in data:
-                    raise ValueError("Invalid JSON")
+            if len(data["questions"]) < batch_size:
+                raise ValueError("Insufficient questions")
 
-                final_questions.extend(data["questions"][:needed])
-                break
-            except Exception as e:
-                if attempt == MAX_RETRY:
-                    raise HTTPException(
-                        status_code=500,
-                        detail=str(e)
-                    )
+            return {
+                "questions": data["questions"][:batch_size]
+            }
 
-    return {"questions": final_questions[:total_questions]}
+        except Exception as e:
+            if attempt == MAX_RETRY:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Batch generation failed: {str(e)}"
+                )
