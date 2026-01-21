@@ -1,49 +1,20 @@
-import os
-import json
-import math
-import uuid
-import itertools
-import datetime
-from fastapi import FastAPI, HTTPException, Header, Depends
+import os, json, math, itertools, secrets
+from datetime import datetime, timedelta
+from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime
-from sqlalchemy.orm import declarative_base, sessionmaker
 import google.generativeai as genai
 
+# ================== إعدادات ==================
 MODEL = "gemini-2.5-flash-lite"
 BATCH_SIZE = 10
-MAX_RETRY = 3
 MAX_TOTAL = 200
+ADMIN_SECRET = os.getenv("ADMIN_SECRET")
 
-DATABASE_URL = "sqlite:///licenses.db"
+if not ADMIN_SECRET:
+    raise RuntimeError("ADMIN_SECRET not set")
 
-engine = create_engine(
-    DATABASE_URL,
-    connect_args={"check_same_thread": False}
-)
-SessionLocal = sessionmaker(bind=engine)
-Base = declarative_base()
-
-class LicenseKey(Base):
-    __tablename__ = "license_keys"
-
-    id = Column(Integer, primary_key=True)
-    key = Column(String, unique=True, index=True)
-    expires_at = Column(DateTime)
-    max_requests = Column(Integer)
-    used_requests = Column(Integer, default=0)
-    is_active = Column(Boolean, default=True)
-
-    def is_valid(self):
-        return (
-            self.is_active
-            and self.used_requests < self.max_requests
-            and datetime.datetime.utcnow() < self.expires_at
-        )
-
-Base.metadata.create_all(engine)
-
+# ================== مفاتيح Gemini ==================
 keys = [os.getenv(f"GEMINI_KEY_{i}") for i in range(1, 12)]
 keys = [k for k in keys if k]
 if not keys:
@@ -55,6 +26,20 @@ def get_model():
     genai.configure(api_key=next(key_cycle))
     return genai.GenerativeModel(MODEL)
 
+# ================== قاعدة بيانات بسيطة (JSON) ==================
+DB_FILE = "licenses.json"
+
+def load_db():
+    if not os.path.exists(DB_FILE):
+        return []
+    with open(DB_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def save_db(data):
+    with open(DB_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+# ================== أدوات ==================
 def safe_json(text: str):
     try:
         start = text.find("{")
@@ -63,146 +48,148 @@ def safe_json(text: str):
     except:
         return None
 
-def lang_instruction(lang: str):
-    return (
-        "Write the final output in clear academic English."
-        if lang == "en"
-        else "اكتب الناتج النهائي باللغة العربية الفصحى الواضحة."
-    )
+def lang_instruction(lang):
+    return "Write in English." if lang == "en" else "اكتب بالعربية الفصحى."
 
-def build_prompt(topic: str, lang: str, count: int):
+def build_prompt(topic, lang, count):
     return f"""
 {lang_instruction(lang)}
 
-أنشئ {count} سؤال اختيار من متعدد من الموضوع التالي.
-
-قواعد صارمة:
-- 4 خيارات فقط لكل سؤال
-- شرح موسع للإجابة الصحيحة
-- شرح مختصر لكل خيار خاطئ
-- لا تكرر الأفكار
-- أعد JSON فقط
+أنشئ {count} سؤال اختيار من متعدد.
 
 الصيغة:
 {{
-  "questions": [
-    {{
-      "q": "",
-      "options": ["", "", "", ""],
-      "answer": 0,
-      "explanations": ["", "", "", ""]
-    }}
-  ]
+ "questions":[
+  {{
+   "q":"",
+   "options":["","","",""],
+   "answer":0,
+   "explanations":["","","",""]
+  }}
+ ]
 }}
 
 الموضوع:
 {topic}
 """
 
+# ================== FastAPI ==================
 app = FastAPI()
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-class GenerateRequest(BaseModel):
+class GenerateReq(BaseModel):
     topic: str
     language: str = "ar"
     total_questions: int = 10
 
-class CreateLicenseRequest(BaseModel):
-    secret: str
-    days: int
-    max_requests: int
+# ================== التحقق من المفتاح ==================
+def validate_license(license_key: str, device_id: str):
+    db = load_db()
+    for lic in db:
+        if lic["license_key"] == license_key:
+            if not lic["is_active"]:
+                raise HTTPException(403, "License disabled")
 
-ADMIN_SECRET = os.getenv("ADMIN_SECRET")
+            if datetime.utcnow() > datetime.fromisoformat(lic["expires_at"]):
+                raise HTTPException(403, "License expired")
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+            if lic["used_requests"] >= lic["max_requests"]:
+                raise HTTPException(403, "License limit reached")
 
-def verify_license(license_key: str = Header(...), db=Depends(get_db)):
-    lic = db.query(LicenseKey).filter(LicenseKey.key == license_key).first()
-    if not lic or not lic.is_valid():
-        raise HTTPException(status_code=403, detail="Invalid or expired license")
-    lic.used_requests += 1
-    db.commit()
-    return lic
+            if lic["bound_device"] is None:
+                lic["bound_device"] = device_id
+            elif lic["bound_device"] != device_id:
+                raise HTTPException(403, "License used on another device")
 
-@app.get("/")
-def root():
-    return {"status": "ok"}
+            lic["used_requests"] += 1
+            save_db(db)
+            return
 
-@app.post("/admin/create-license")
-def create_license(req: CreateLicenseRequest, db=Depends(get_db)):
-    if req.secret != ADMIN_SECRET:
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    raise HTTPException(403, "Invalid license")
 
-    key = "ST-" + uuid.uuid4().hex[:12].upper()
-    expires = datetime.datetime.utcnow() + datetime.timedelta(days=req.days)
-
-    lic = LicenseKey(
-        key=key,
-        expires_at=expires,
-        max_requests=req.max_requests,
-        used_requests=0,
-        is_active=True
-    )
-
-    db.add(lic)
-    db.commit()
-
-    return {
-        "license_key": key,
-        "expires_at": expires.isoformat(),
-        "max_requests": req.max_requests
-    }
-
+# ================== Endpoint المستخدم ==================
 @app.post("/generate/batch")
-def generate_batch(req: GenerateRequest, lic=Depends(verify_license)):
-    total = min(max(req.total_questions, 1), MAX_TOTAL)
+def generate(
+    req: GenerateReq,
+    license_key: str = Header(...),
+    device_id: str = Header(...)
+):
+    validate_license(license_key, device_id)
+
+    total = min(req.total_questions, MAX_TOTAL)
     batches = math.ceil(total / BATCH_SIZE)
     final_questions = []
 
-    for batch_index in range(batches):
-        remaining = total - len(final_questions)
-        if remaining <= 0:
-            break
-
-        needed = min(BATCH_SIZE, remaining)
-
-        for attempt in range(MAX_RETRY):
-            model = get_model()
-            prompt = build_prompt(req.topic, req.language, needed)
-
-            try:
-                response = model.generate_content(prompt)
-                data = safe_json(response.text)
-
-                if not data or "questions" not in data:
-                    raise ValueError("Invalid JSON")
-
-                final_questions.extend(data["questions"][:needed])
-                break
-
-            except Exception as e:
-                if attempt == MAX_RETRY - 1:
-                    raise HTTPException(
-                        status_code=500,
-                        detail=f"Batch failed: {str(e)}"
-                    )
-
-    if len(final_questions) != total:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Generated {len(final_questions)} out of {total}"
-        )
+    for _ in range(batches):
+        needed = min(BATCH_SIZE, total - len(final_questions))
+        model = get_model()
+        prompt = build_prompt(req.topic, req.language, needed)
+        res = model.generate_content(prompt)
+        data = safe_json(res.text)
+        if not data:
+            raise HTTPException(500, "Model error")
+        final_questions.extend(data["questions"][:needed])
 
     return {"questions": final_questions}
+
+# ================== Admin Panel ==================
+
+class CreateLicense(BaseModel):
+    days: int = 30
+    max_requests: int = 1000
+
+def admin_check(key: str):
+    if key != ADMIN_SECRET:
+        raise HTTPException(403, "Forbidden")
+
+@app.post("/admin/create")
+def create_license(data: CreateLicense, x_admin_key: str = Header(...)):
+    admin_check(x_admin_key)
+
+    db = load_db()
+    license_key = "ST-" + secrets.token_hex(6).upper()
+
+    db.append({
+        "license_key": license_key,
+        "expires_at": (datetime.utcnow() + timedelta(days=data.days)).isoformat(),
+        "max_requests": data.max_requests,
+        "used_requests": 0,
+        "bound_device": None,
+        "is_active": True,
+        "created_at": datetime.utcnow().isoformat()
+    })
+
+    save_db(db)
+    return {"license_key": license_key}
+
+@app.get("/admin/licenses")
+def list_licenses(x_admin_key: str = Header(...)):
+    admin_check(x_admin_key)
+    return load_db()
+
+@app.post("/admin/disable/{license_key}")
+def disable_license(license_key: str, x_admin_key: str = Header(...)):
+    admin_check(x_admin_key)
+    db = load_db()
+    for lic in db:
+        if lic["license_key"] == license_key:
+            lic["is_active"] = False
+            save_db(db)
+            return {"status": "disabled"}
+    raise HTTPException(404, "Not found")
+
+@app.post("/admin/reset-device/{license_key}")
+def reset_device(license_key: str, x_admin_key: str = Header(...)):
+    admin_check(x_admin_key)
+    db = load_db()
+    for lic in db:
+        if lic["license_key"] == license_key:
+            lic["bound_device"] = None
+            save_db(db)
+            return {"status": "reset"}
+    raise HTTPException(404, "Not found")
