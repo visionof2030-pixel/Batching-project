@@ -6,3 +6,6 @@ python-dotenv
 google-generativeai
 Pillow
 pdfplumber
+python-multipart
+PyPDF2
+camelot-py[base]
