@@ -56,10 +56,14 @@ class QuestionTypes(BaseModel):
     true_false: bool = False
     fill_blank: bool = False
 
+class LanguageConfig(BaseModel):
+    lang: str = "ar"  # ar, en
+
 class GenerateReq(BaseModel):
     topic: str
     total_questions: int = 10
     question_types: QuestionTypes
+    language: LanguageConfig = LanguageConfig()
 
 class CreateLicense(BaseModel):
     days: int = 30
@@ -95,7 +99,13 @@ def admin_check(key):
     if key != ADMIN_SECRET:
         raise HTTPException(403, "Forbidden")
 
-def build_prompt(topic: str, count: int, q_types: QuestionTypes):
+def build_prompt(topic: str, count: int, q_types: QuestionTypes, lang: str = "ar"):
+    if lang == "en":
+        return build_prompt_en(topic, count, q_types)
+    else:
+        return build_prompt_ar(topic, count, q_types)
+
+def build_prompt_ar(topic: str, count: int, q_types: QuestionTypes):
     type_instructions = []
     
     if q_types.multiple_choice:
@@ -155,34 +165,115 @@ def build_prompt(topic: str, count: int, q_types: QuestionTypes):
       "type": "multiple_choice",
       "q": "نص السؤال هنا",
       "options": ["الخيار الأول", "الخيار الثاني", "الخيار الثالث", "الخيار الرابع"],
-      "answer": 0,  // رقم الخيار الصحيح (0-3)
-      "correct_explanation": "شرح مفصّل للإجابة الصحيحة. اشرح لماذا هذه الإجابة صحيحة بأسلوب تعليمي. قدم أمثلة إذا لزم الأمر.",
+      "answer": 0,
+      "correct_explanation": "شرح مفصّل للإجابة الصحيحة.",
       "wrong_explanations": [
-        "شرح مفصّل لسبب خطأ الخيار الأول. اشرح لماذا هذا الخيار غير صحيح.",
-        "شرح مفصّل لسبب خطأ الخيار الثاني. اشرح لماذا هذا الخيار غير صحيح.",
-        "شرح مفصّل لسبب خطأ الخيار الثالث. اشرح لماذا هذا الخيار غير صحيح.",
-        "شرح مفصّل لسبب خطأ الخيار الرابع. اشرح لماذا هذا الخيار غير صحيح."
+        "شرح مفصّل لسبب خطأ الخيار الأول.",
+        "شرح مفصّل لسبب خطأ الخيار الثاني.",
+        "شرح مفصّل لسبب خطأ الخيار الثالث.",
+        "شرح مفصّل لسبب خطأ الخيار الرابع."
       ]
-    }},
-    {{
-      "type": "true_false",
-      "q": "العبارة هنا",
-      "answer": true,  // أو false
-      "correct_explanation": "شرح مفصّل للإجابة. اشرح لماذا العبارة صحيحة أو خاطئة.",
-      "correction": "إذا كانت العبارة خاطئة، قدم التصحيح هنا"
-    }},
-    {{
-      "type": "fill_blank",
-      "q": "الجملة مع _____ هنا",
-      "answer": "الإجابة الصحيحة",
-      "correct_explanation": "شرح مفصّل للإجابة. اشرح لماذا هذه الإجابة صحيحة.",
-      "alternatives": ["بديل1", "بديل2"]  // إن وجدت
     }}
   ]
 }}
 """
 
-def build_prompt_from_text(text: str, count: int, q_types: QuestionTypes):
+def build_prompt_en(topic: str, count: int, q_types: QuestionTypes):
+    type_instructions = []
+    
+    if q_types.multiple_choice:
+        type_instructions.append("""
+Multiple Choice Questions:
+- Question with 4 options
+- Only one correct answer
+- Provide detailed explanation for the correct answer (why is this answer correct?)
+- Provide detailed explanation for each wrong option (why is this option incorrect?)
+- Ensure options are similar and somewhat confusing
+- Use educational tone in explanations
+""")
+    
+    if q_types.true_false:
+        type_instructions.append("""
+True/False Questions:
+- A statement that is either true or false
+- Provide detailed explanation for the answer (why the statement is true or false)
+- If the statement is false, correct it and explain why
+- Provide illustrative examples if needed
+""")
+    
+    if q_types.fill_blank:
+        type_instructions.append("""
+Fill in the Blank Questions:
+- A sentence with a missing word or phrase
+- Use _____ or (...) to indicate the blank
+- Provide the correct answer
+- Provide detailed explanation of why this answer is correct
+- Mention acceptable alternatives if any
+- Provide examples of the word in different contexts
+""")
+
+    types_str = "\n".join(type_instructions)
+    
+    return f"""
+You are an intelligent educational question generation system.
+Your task is to create high-quality test questions with detailed explanations.
+
+{types_str}
+
+Number of questions required: {count}
+Topic: {topic}
+
+**Important Additional Requirements:**
+1. Each question must be clear and precise
+2. Explanations should be educational and detailed
+3. For wrong options: explain the reason clearly
+4. Use correct English language
+5. Provide illustrative examples when appropriate
+6. Ensure the information provided is accurate
+
+**Required JSON Format Exactly:**
+{{
+  "questions": [
+    {{
+      "type": "multiple_choice",
+      "q": "Question text here",
+      "options": ["Option 1", "Option 2", "Option 3", "Option 4"],
+      "answer": 0,
+      "correct_explanation": "Detailed explanation of the correct answer.",
+      "wrong_explanations": [
+        "Detailed explanation of why option 1 is wrong.",
+        "Detailed explanation of why option 2 is wrong.",
+        "Detailed explanation of why option 3 is wrong.",
+        "Detailed explanation of why option 4 is wrong."
+      ]
+    }},
+    {{
+      "type": "true_false",
+      "q": "Statement here",
+      "answer": true,
+      "correct_explanation": "Detailed explanation of the answer.",
+      "correction": "Correction if applicable"
+    }},
+    {{
+      "type": "fill_blank",
+      "q": "Sentence with _____ here",
+      "answer": "Correct answer",
+      "correct_explanation": "Detailed explanation of the answer.",
+      "alternatives": ["alternative1", "alternative2"]
+    }}
+  ]
+}}
+
+**IMPORTANT: All questions and explanations MUST be in English only.**
+"""
+
+def build_prompt_from_text(text: str, count: int, q_types: QuestionTypes, lang: str = "ar"):
+    if lang == "en":
+        return build_prompt_from_text_en(text, count, q_types)
+    else:
+        return build_prompt_from_text_ar(text, count, q_types)
+
+def build_prompt_from_text_ar(text: str, count: int, q_types: QuestionTypes):
     type_instructions = []
     
     if q_types.multiple_choice:
@@ -235,6 +326,66 @@ def build_prompt_from_text(text: str, count: int, q_types: QuestionTypes):
       "q": "جملة عن النص مع _____",
       "answer": "إجابة",
       "correct_explanation": "شرح مفصّل",
+      "alternatives": []
+    }}
+  ]
+}}
+"""
+
+def build_prompt_from_text_en(text: str, count: int, q_types: QuestionTypes):
+    type_instructions = []
+    
+    if q_types.multiple_choice:
+        type_instructions.append("Multiple choice with detailed explanations")
+    if q_types.true_false:
+        type_instructions.append("True/False with detailed explanations")
+    if q_types.fill_blank:
+        type_instructions.append("Fill in the blank with detailed explanations")
+
+    types_str = ", ".join(type_instructions)
+    
+    return f"""
+You are an intelligent educational question generation system.
+Your task is to create high-quality test questions with detailed explanations.
+
+Required question types: {types_str}
+
+Source text:
+{text[:4000]}
+
+Number of questions required: {count}
+
+**Important Instructions:**
+1. ALL questions must be based ONLY on the source text
+2. Provide detailed educational explanations for each question
+3. For wrong options: clearly explain why they're wrong
+4. Extract key information from the text
+5. Ensure accuracy based on the text
+6. ALL questions and explanations MUST be in ENGLISH only
+
+**Final JSON Format:**
+{{
+  "questions": [
+    {{
+      "type": "multiple_choice",
+      "q": "Question based on text",
+      "options": ["option1", "option2", "option3", "option4"],
+      "answer": 0,
+      "correct_explanation": "Detailed explanation",
+      "wrong_explanations": ["expl1", "expl2", "expl3", "expl4"]
+    }},
+    {{
+      "type": "true_false",
+      "q": "Statement about the text",
+      "answer": true,
+      "correct_explanation": "Detailed explanation",
+      "correction": "Correction if needed"
+    }},
+    {{
+      "type": "fill_blank",
+      "q": "Sentence about text with _____",
+      "answer": "answer",
+      "correct_explanation": "Detailed explanation",
       "alternatives": []
     }}
   ]
@@ -294,7 +445,7 @@ def generate_manual(
     for _ in range(batches):
         need = min(BATCH_SIZE, total - len(out))
         model = get_model()
-        prompt = build_prompt(req.topic, need, req.question_types)
+        prompt = build_prompt(req.topic, need, req.question_types, req.language.lang)
         
         try:
             res = model.generate_content(prompt)
@@ -353,6 +504,7 @@ def generate_from_image(
     multiple_choice: bool = True,
     true_false: bool = False,
     fill_blank: bool = False,
+    language: str = "ar",
     file: UploadFile = File(...),
     license_key: str = Header(...),
     device_id: str = Header(...)
@@ -382,7 +534,7 @@ def generate_from_image(
     for _ in range(batches):
         need = min(BATCH_SIZE, total - len(out))
         model = get_model()
-        prompt = build_prompt_from_text(text, need, question_types)
+        prompt = build_prompt_from_text(text, need, question_types, language)
         res = model.generate_content(prompt)
         data = safe_json(res.text)
         
@@ -420,12 +572,13 @@ def generate_from_image(
 
     return {"questions": out[:total]}
 
-@app.post("/generate/from-file")
+@app.post("/generate/from-pdf")
 def generate_from_pdf(
     total_questions: int = 10,
     multiple_choice: bool = True,
     true_false: bool = False,
     fill_blank: bool = False,
+    language: str = "ar",
     file: UploadFile = File(...),
     license_key: str = Header(...),
     device_id: str = Header(...)
@@ -455,7 +608,7 @@ def generate_from_pdf(
     for _ in range(batches):
         need = min(BATCH_SIZE, total - len(out))
         model = get_model()
-        prompt = build_prompt_from_text(text, need, question_types)
+        prompt = build_prompt_from_text(text, need, question_types, language)
         res = model.generate_content(prompt)
         data = safe_json(res.text)
         
@@ -550,6 +703,10 @@ def admin_delete(key: str, x_admin_key: str = Header(...)):
     db = [l for l in load_db() if l["license_key"] != key]
     save_db(db)
     return {"status": "deleted"}
+
+@app.get("/health")
+def health_check():
+    return {"status": "healthy", "timestamp": now().isoformat()}
 
 if __name__ == "__main__":
     import uvicorn
