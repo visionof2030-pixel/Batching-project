@@ -1,9 +1,6 @@
-# =========================
-# main.py  (BACKEND كامل)
-# =========================
 import os, json, math, itertools, secrets, re
 from datetime import datetime, timedelta
-from fastapi import FastAPI, HTTPException, Header, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, Header, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from PIL import Image
@@ -45,6 +42,11 @@ def save_db(data):
 def now():
     return datetime.utcnow()
 
+def clean_text(text: str):
+    text = re.sub(r'\s+', ' ', text)
+    text = re.sub(r'[^\u0600-\u06FFa-zA-Z0-9.,؟!()\n ]', '', text)
+    return text.strip()
+
 def safe_json(text: str):
     try:
         s = text.find("{")
@@ -53,10 +55,39 @@ def safe_json(text: str):
     except:
         return None
 
-def clean_text(text: str):
-    text = re.sub(r'\s+', ' ', text)
-    text = re.sub(r'[^\u0600-\u06FFa-zA-Z0-9.,؟!()\n ]', '', text)
-    return text.strip()
+def build_prompt_from_text(text, count, types):
+    return f"""
+أنت نظام تعليمي صارم.
+ممنوع كتابة أي نص خارج JSON.
+
+أعد صياغة النص لغويًا بشكل صحيح أولًا، ثم أنشئ أسئلة دقيقة جدًا.
+
+أنواع الأسئلة المطلوبة:
+{", ".join(types)}
+
+قواعد مهمة جدًا:
+- أكمل الفراغ يجب أن يكون حرفيًا ودقيقًا جدًا من النص.
+- لا تخترع معلومات.
+- لا تكرر الأسئلة.
+
+النص:
+{text}
+
+الصيغة النهائية فقط:
+{{
+ "questions":[
+  {{
+   "type":"mcq | tf | fill",
+   "q":"",
+   "options":["","","",""],
+   "answer":0,
+   "explanations":[""]
+  }}
+ ]
+}}
+
+عدد الأسئلة: {count}
+"""
 
 def extract_text_from_pdf(file):
     text = ""
@@ -69,45 +100,12 @@ def extract_text_from_pdf(file):
 def extract_text_from_image_ai(file):
     image = Image.open(file).convert("RGB")
     model = get_model()
-    prompt = "استخرج النص الموجود في الصورة بدقة وأعد النص فقط."
-    res = model.generate_content([prompt, image])
+    res = model.generate_content([
+        "استخرج النص الموجود في الصورة بدقة حرفية بدون تفسير.",
+        image
+    ])
     text = clean_text(res.text)
     return text[:MAX_TEXT_CHARS]
-
-def build_prompt_from_text(text, count, types):
-    return f"""
-أنت نظام تعليمي محترف.
-أنشئ أسئلة تعليمية دقيقة جدًا بناءً على النص فقط.
-
-أنواع الأسئلة المسموحة:
-{", ".join(types)}
-
-قواعد صارمة:
-- لا تضف أي معلومة غير موجودة في النص
-- الصياغة العربية سليمة وواضحة
-- في (أكمل الفراغ):
-  - الفراغ قصير جدًا
-  - الجواب مأخوذ حرفيًا من النص
-  - جواب واحد فقط صحيح
-
-النص:
-{text}
-
-عدد الأسئلة: {count}
-
-أعد الناتج بصيغة JSON فقط:
-{{
- "questions":[
-  {{
-   "type":"mcq | tf | fill",
-   "q":"",
-   "options":["","","",""],
-   "answer":0 | true | "النص الناقص",
-   "explanations":[""]
-  }}
- ]
-}}
-"""
 
 app = FastAPI()
 app.add_middleware(
@@ -119,8 +117,8 @@ app.add_middleware(
 
 class GenerateReq(BaseModel):
     topic: str
-    total_questions: int = 10
-    types: list[str] = ["mcq"]
+    total_questions: int
+    types: list[str]
 
 def validate_license(license_key, device_id):
     db = load_db()
@@ -141,44 +139,54 @@ def validate_license(license_key, device_id):
             return
     raise HTTPException(403, "Invalid license")
 
-@app.post("/generate/batch")
-def generate_manual(req: GenerateReq,
-                    license_key: str = Header(...),
-                    device_id: str = Header(...)):
+@app.post("/generate/from-text")
+def generate_from_text(
+    req: GenerateReq,
+    license_key: str = Header(...),
+    device_id: str = Header(...)
+):
     validate_license(license_key, device_id)
-    model = get_model()
-    res = model.generate_content(build_prompt_from_text(req.topic, req.total_questions, req.types))
-    data = safe_json(res.text)
-    if not data:
-        raise HTTPException(500, "Model error")
-    return data
 
-@app.post("/generate/from-image")
-def generate_from_image(total_questions: int = Form(...),
-                        types: str = Form(...),
-                        file: UploadFile = File(...),
-                        license_key: str = Header(...),
-                        device_id: str = Header(...)):
-    validate_license(license_key, device_id)
-    text = extract_text_from_image_ai(file.file)
+    text = clean_text(req.topic)
+    if len(text) < 30:
+        raise HTTPException(400, "Text too short")
+
     model = get_model()
-    res = model.generate_content(build_prompt_from_text(text, total_questions, json.loads(types)))
+    res = model.generate_content(
+        build_prompt_from_text(text, req.total_questions, req.types)
+    )
     data = safe_json(res.text)
-    if not data:
+    if not data or "questions" not in data:
         raise HTTPException(500, "Model error")
-    return data
+
+    return {"questions": data["questions"]}
 
 @app.post("/generate/from-file")
-def generate_from_pdf(total_questions: int = Form(...),
-                      types: str = Form(...),
-                      file: UploadFile = File(...),
-                      license_key: str = Header(...),
-                      device_id: str = Header(...)):
+def generate_from_file(
+    total_questions: int,
+    types: str,
+    file: UploadFile = File(...),
+    license_key: str = Header(...),
+    device_id: str = Header(...)
+):
     validate_license(license_key, device_id)
-    text = extract_text_from_pdf(file.file)
+
+    types_list = types.split(",")
+
+    if file.filename.lower().endswith(".pdf"):
+        text = extract_text_from_pdf(file.file)
+    else:
+        text = extract_text_from_image_ai(file.file)
+
+    if len(text) < 50:
+        raise HTTPException(400, "Extraction failed")
+
     model = get_model()
-    res = model.generate_content(build_prompt_from_text(text, total_questions, json.loads(types)))
+    res = model.generate_content(
+        build_prompt_from_text(text, total_questions, types_list)
+    )
     data = safe_json(res.text)
-    if not data:
+    if not data or "questions" not in data:
         raise HTTPException(500, "Model error")
-    return data
+
+    return {"questions": data["questions"]}
