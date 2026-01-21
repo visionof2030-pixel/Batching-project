@@ -1,6 +1,6 @@
 fastapi
 uvicorn
-sqlalchemy
+python-multipart
 pydantic
-python-dotenv
 google-generativeai
+Pillow
