@@ -4,3 +4,4 @@ python-multipart
 pydantic
 google-generativeai
 Pillow
+pdfplumber
