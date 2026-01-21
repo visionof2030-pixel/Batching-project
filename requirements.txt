@@ -4,4 +4,4 @@ sqlalchemy
 pydantic
 python-dotenv
 google-generativeai
-Pillow==10.2.0
+Pillow
