@@ -1,8 +1,9 @@
 import os, json, math, itertools, secrets
 from datetime import datetime, timedelta
-from fastapi import FastAPI, HTTPException, Header
+from fastapi import FastAPI, HTTPException, Header, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from PIL import Image
 import google.generativeai as genai
 
 MODEL = "gemini-2.5-flash-lite"
@@ -69,6 +70,38 @@ def build_prompt(topic, lang, count):
 {topic}
 """
 
+def build_prompt_from_text(text, lang, count):
+    return f"""
+اعتمد فقط على النص التالي دون إضافة أي معلومات خارجية.
+
+النص:
+{text}
+
+أنشئ {count} سؤال اختيار من متعدد.
+
+الصيغة:
+{{
+ "questions":[
+  {{
+   "q":"",
+   "options":["","","",""],
+   "answer":0,
+   "explanations":["","","",""]
+  }}
+ ]
+}}
+"""
+
+def extract_text_from_image_ai(file):
+    image = Image.open(file).convert("RGB")
+    model = get_model()
+    prompt = """
+استخرج النص الموجود في هذه الصورة بدقة.
+أعد النص فقط بدون شرح أو تنسيق إضافي.
+"""
+    res = model.generate_content([prompt, image])
+    return res.text.strip()
+
 app = FastAPI()
 
 app.add_middleware(
@@ -103,12 +136,10 @@ def validate_license(license_key, device_id):
                 raise HTTPException(403, "License expired")
             if l["used_requests"] >= l["max_requests"]:
                 raise HTTPException(403, "Limit reached")
-
             if l["bound_device"] is None:
                 l["bound_device"] = device_id
             elif l["bound_device"] != device_id:
                 raise HTTPException(403, "License used on another device")
-
             l["used_requests"] += 1
             l["last_request_at"] = now().isoformat()
             save_db(db)
@@ -137,6 +168,40 @@ def generate(req: GenerateReq,
         need = min(BATCH_SIZE, total - len(out))
         model = get_model()
         res = model.generate_content(build_prompt(req.topic, req.language, need))
+        data = safe_json(res.text)
+        if not data:
+            raise HTTPException(500, "Model error")
+        out.extend(data["questions"][:need])
+
+    return {"questions": out}
+
+@app.post("/generate/from-image")
+def generate_from_image(
+    total_questions: int = 10,
+    language: str = "ar",
+    file: UploadFile = File(...),
+    license_key: str = Header(...),
+    device_id: str = Header(...)
+):
+    validate_license(license_key, device_id)
+
+    if not file.filename.lower().endswith((".png", ".jpg", ".jpeg")):
+        raise HTTPException(400, "Unsupported file type")
+
+    text = extract_text_from_image_ai(file.file)
+    if not text or len(text) < 30:
+        raise HTTPException(400, "Text extraction failed")
+
+    total = min(total_questions, MAX_TOTAL)
+    batches = math.ceil(total / BATCH_SIZE)
+    out = []
+
+    for _ in range(batches):
+        need = min(BATCH_SIZE, total - len(out))
+        model = get_model()
+        res = model.generate_content(
+            build_prompt_from_text(text, language, need)
+        )
         data = safe_json(res.text)
         if not data:
             raise HTTPException(500, "Model error")
