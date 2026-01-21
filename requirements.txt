@@ -4,4 +4,3 @@ sqlalchemy
 pydantic
 python-dotenv
 google-generativeai
-python-multipart
