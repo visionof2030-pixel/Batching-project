@@ -11,7 +11,7 @@ import google.generativeai as genai
 MODEL = "gemini-2.5-flash-lite"
 BATCH_SIZE = 10
 MAX_TOTAL = 200
-MAX_TEXT_CHARS = 10000  # زيادة لقراءة PDF أفضل
+MAX_TEXT_CHARS = 6000
 
 ADMIN_SECRET = os.getenv("ADMIN_SECRET")
 if not ADMIN_SECRET:
@@ -99,36 +99,84 @@ def build_prompt(topic: str, count: int, q_types: QuestionTypes):
     type_instructions = []
     
     if q_types.multiple_choice:
-        type_instructions.append("اختيار من متعدد مع 4 خيارات وشروحات مفصلة")
+        type_instructions.append("""
+اختيار من متعدد:
+- سؤال مع 4 خيارات
+- إجابة واحدة صحيحة فقط
+- قدم شرحاً مفصلاً للإجابة الصحيحة (لماذا هذه الإجابة صحيحة؟)
+- قدم شرحاً مفصلاً لكل خيار خاطئ (لماذا هذا الخيار غير صحيح؟)
+- تأكد من أن الخيارات متقاربة ومربكة بعض الشيء
+- استخدم نبرة تعليمية في الشروحات
+""")
+    
     if q_types.true_false:
-        type_instructions.append("صح/خطأ مع شرح مفصل")
+        type_instructions.append("""
+صح/خطأ:
+- عبارة تكون إما صحيحة أو خاطئة
+- قدم شرحاً مفصلاً للإجابة (لماذا العبارة صحيحة أو خاطئة؟)
+- إذا كانت العبارة خاطئة، صححها واشرح السبب
+- قدم أمثلة توضيحية إذا لزم الأمر
+""")
+    
     if q_types.fill_blank:
-        type_instructions.append("أكمل الفراغ مع شرح مفصل")
+        type_instructions.append("""
+أكمل الفراغ:
+- جملة ناقصة بكلمة أو عبارة
+- استخدم _____ أو (...) للإشارة إلى الفراغ
+- قدم الإجابة الصحيحة
+- قدم شرحاً مفصلاً لماذا هذه الإجابة صحيحة
+- اذكر بدائل مقبولة إذا وجدت
+- قدم أمثلة على استخدام الكلمة في سياقات مختلفة
+""")
 
-    types_str = "، ".join(type_instructions)
+    types_str = "\n".join(type_instructions)
     
     return f"""
 أنت نظام توليد أسئلة تعليمية ذكي.
-أنشئ {count} سؤالاً بأنواع: {types_str}
+مهمتك إنشاء أسئلة اختبارية عالية الجودة مع شروحات مفصلة.
 
+{types_str}
+
+عدد الأسئلة المطلوب: {count}
 الموضوع: {topic}
 
-المتطلبات:
-1. دقة عالية في المحتوى
-2. شروحات تعليمية مفصلة
-3. خيارات متقاربة وذات معنى
-4. إجابات محددة وواضحة
+**متطلبات إضافية مهمة:**
+1. كل سؤال يجب أن يكون واضحاً ودقيقاً
+2. الشروحات يجب أن تكون تعليمية ومفصلة
+3. للخيارات الخاطئة: اشرح سبب الخطأ بشكل واضح
+4. استخدم لغة عربية سليمة وفصيحة
+5. قدم أمثلة توضيحية عندما يكون ذلك مناسباً
+6. تأكد من صحة المعلومات المقدمة
 
-صيغة JSON المطلوبة:
+**صيغة JSON المطلوبة بدقة:**
 {{
   "questions": [
     {{
       "type": "multiple_choice",
-      "q": "السؤال",
-      "options": ["خيار1", "خيار2", "خيار3", "خيار4"],
-      "answer": 0,
-      "correct_explanation": "شرح مفصّل للإجابة الصحيحة",
-      "wrong_explanations": ["شرح1", "شرح2", "شرح3", "شرح4"]
+      "q": "نص السؤال هنا",
+      "options": ["الخيار الأول", "الخيار الثاني", "الخيار الثالث", "الخيار الرابع"],
+      "answer": 0,  // رقم الخيار الصحيح (0-3)
+      "correct_explanation": "شرح مفصّل للإجابة الصحيحة. اشرح لماذا هذه الإجابة صحيحة بأسلوب تعليمي. قدم أمثلة إذا لزم الأمر.",
+      "wrong_explanations": [
+        "شرح مفصّل لسبب خطأ الخيار الأول. اشرح لماذا هذا الخيار غير صحيح.",
+        "شرح مفصّل لسبب خطأ الخيار الثاني. اشرح لماذا هذا الخيار غير صحيح.",
+        "شرح مفصّل لسبب خطأ الخيار الثالث. اشرح لماذا هذا الخيار غير صحيح.",
+        "شرح مفصّل لسبب خطأ الخيار الرابع. اشرح لماذا هذا الخيار غير صحيح."
+      ]
+    }},
+    {{
+      "type": "true_false",
+      "q": "العبارة هنا",
+      "answer": true,  // أو false
+      "correct_explanation": "شرح مفصّل للإجابة. اشرح لماذا العبارة صحيحة أو خاطئة.",
+      "correction": "إذا كانت العبارة خاطئة، قدم التصحيح هنا"
+    }},
+    {{
+      "type": "fill_blank",
+      "q": "الجملة مع _____ هنا",
+      "answer": "الإجابة الصحيحة",
+      "correct_explanation": "شرح مفصّل للإجابة. اشرح لماذا هذه الإجابة صحيحة.",
+      "alternatives": ["بديل1", "بديل2"]  // إن وجدت
     }}
   ]
 }}
@@ -138,87 +186,70 @@ def build_prompt_from_text(text: str, count: int, q_types: QuestionTypes):
     type_instructions = []
     
     if q_types.multiple_choice:
-        type_instructions.append("اختيار من متعدد")
+        type_instructions.append("اختيار من متعدد مع شروحات مفصلة")
     if q_types.true_false:
-        type_instructions.append("صح/خطأ")
+        type_instructions.append("صح/خطأ مع شروحات مفصلة")
     if q_types.fill_blank:
-        type_instructions.append("أكمل الفراغ")
+        type_instructions.append("أكمل الفراغ مع شروحات مفصلة")
 
     types_str = "، ".join(type_instructions)
     
     return f"""
-أنت نظام توليد أسئلة تعليمية من النصوص.
+أنت نظام توليد أسئلة تعليمية ذكي.
+مهمتك إنشاء أسئلة اختبارية عالية الجودة مع شروحات مفصلة.
+
+أنواع الأسئلة المطلوبة: {types_str}
+
 النص المصدر:
-{text[:5000]}
+{text[:4000]}
 
-أنشئ {count} سؤالاً بأنواع: {types_str}
+عدد الأسئلة المطلوب: {count}
 
-تعليمات مهمة:
-1. جميع الأسئلة منبثقة من النص فقط
-2. تنوع في أنواع الأسئلة حسب الطلب
-3. شروحات مفصلة وتعليمية
-4. خيارات منطقية وذات صلة بالنص
-5. إجابات دقيقة من النص
+**تعليمات مهمة:**
+1. جميع الأسئلة يجب أن تكون مبنية على النص المصدر فقط
+2. قدم شروحات مفصلة وتعليمية لكل سؤال
+3. للخيارات الخاطئة: اشرح سبب الخطأ بوضوح
+4. استخرج المعلومات الرئيسية من النص
+5. تأكد من دقة المعلومات بناءً على النص
 
-صيغة JSON النهائية:
+**تنسيق JSON النهائي:**
 {{
   "questions": [
     {{
       "type": "multiple_choice",
-      "q": "سؤال من النص",
+      "q": "سؤال مبنى على النص",
       "options": ["خيار1", "خيار2", "خيار3", "خيار4"],
       "answer": 0,
-      "correct_explanation": "شرح مفصل",
+      "correct_explanation": "شرح مفصّل",
       "wrong_explanations": ["شرح1", "شرح2", "شرح3", "شرح4"]
+    }},
+    {{
+      "type": "true_false",
+      "q": "عبارة عن النص",
+      "answer": true,
+      "correct_explanation": "شرح مفصّل",
+      "correction": "التصحيح إذا لزم"
+    }},
+    {{
+      "type": "fill_blank",
+      "q": "جملة عن النص مع _____",
+      "answer": "إجابة",
+      "correct_explanation": "شرح مفصّل",
+      "alternatives": []
     }}
   ]
 }}
 """
 
 def extract_text_from_pdf(file):
-    """استخراج نص من PDF بدقة عالية"""
     text = ""
-    try:
-        with pdfplumber.open(file) as pdf:
-            for i, page in enumerate(pdf.pages):
-                # استخراج النص مع الحفاظ على التنسيق
-                page_text = page.extract_text()
-                if page_text:
-                    text += f"--- صفحة {i+1} ---\n{page_text}\n\n"
-                
-                # محاولة استخراج الجداول إذا وجدت
-                tables = page.extract_tables()
-                for table in tables:
-                    if table:
-                        table_text = "\n".join(["\t".join([str(cell) if cell else "" for cell in row]) for row in table])
-                        text += f"[جدول]\n{table_text}\n\n"
-        
-        # تنظيف النص
-        text = clean_extracted_text(text)
-        
-        if len(text) > MAX_TEXT_CHARS:
-            text = text[:MAX_TEXT_CHARS] + "\n...[النص مقصوص بسبب الطول]"
-            
-        return text
-        
-    except Exception as e:
-        print(f"خطأ في استخراج PDF: {e}")
-        raise HTTPException(500, f"خطأ في قراءة ملف PDF: {str(e)}")
-
-def clean_extracted_text(text):
-    """تنظيف النص المستخرج"""
-    import re
-    
-    # إزالة المسافات الزائدة
-    text = re.sub(r'\s+', ' ', text)
-    
-    # إزالة الأسطر الفارغة المتعددة
-    text = re.sub(r'\n\s*\n', '\n\n', text)
-    
-    # إصلاح الكلمات المقطوعة
-    text = re.sub(r'(\w)-\s+(\w)', r'\1\2', text)
-    
-    return text.strip()
+    with pdfplumber.open(file) as pdf:
+        for page in pdf.pages:
+            text += page.extract_text() or ""
+    text = text.strip()
+    if len(text) > MAX_TEXT_CHARS:
+        text = text[:MAX_TEXT_CHARS]
+    return text
 
 def extract_text_from_image_ai(file):
     image = Image.open(file).convert("RGB")
@@ -226,10 +257,8 @@ def extract_text_from_image_ai(file):
     prompt = "استخرج النص الموجود في الصورة بدقة وأعد النص فقط."
     res = model.generate_content([prompt, image])
     text = res.text.strip()
-    
     if len(text) > MAX_TEXT_CHARS:
         text = text[:MAX_TEXT_CHARS]
-    
     return text
 
 app = FastAPI()
@@ -272,6 +301,7 @@ def generate_manual(
             data = safe_json(res.text)
             
             if not data or "questions" not in data:
+                # محاولة إصلاح JSON
                 try:
                     cleaned = res.text
                     cleaned = cleaned.replace("'", '"')
@@ -286,7 +316,7 @@ def generate_manual(
                     print(f"JSON Parse Error: {e}")
                     raise HTTPException(500, "خطأ في معالجة الإجابة من النموذج")
             
-            # إضافة الحقول الافتراضية
+            # التحقق من صحة الهيكل وإضافة الحقول الافتراضية
             for q in data.get("questions", []):
                 q_type = q.get("type")
                 
@@ -406,18 +436,11 @@ def generate_from_pdf(
         raise HTTPException(400, "يجب تحديد نوع سؤال واحد على الأقل")
 
     if not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(400, "نوع الملف غير مدعوم - يجب أن يكون PDF")
+        raise HTTPException(400, "نوع الملف غير مدعوم")
 
-    try:
-        text = extract_text_from_pdf(file.file)
-        if not text or len(text) < 50:
-            raise HTTPException(400, "فشل استخراج النص من الملف أو الملف فارغ")
-        
-        # حفظ النص المستخرج مؤقتاً للتصحيح
-        print(f"تم استخراج {len(text)} حرفاً من PDF")
-        
-    except Exception as e:
-        raise HTTPException(500, f"خطأ في معالجة ملف PDF: {str(e)}")
+    text = extract_text_from_pdf(file.file)
+    if not text or len(text) < 50:
+        raise HTTPException(400, "فشل استخراج النص من الملف")
 
     total = min(total_questions, MAX_TOTAL)
     batches = math.ceil(total / BATCH_SIZE)
@@ -433,46 +456,40 @@ def generate_from_pdf(
         need = min(BATCH_SIZE, total - len(out))
         model = get_model()
         prompt = build_prompt_from_text(text, need, question_types)
+        res = model.generate_content(prompt)
+        data = safe_json(res.text)
         
-        try:
-            res = model.generate_content(prompt)
-            data = safe_json(res.text)
+        if not data or "questions" not in data:
+            try:
+                cleaned = res.text.replace("'", '"')
+                cleaned = cleaned.replace("True", "true").replace("False", "false")
+                data = json.loads(cleaned)
+            except:
+                raise HTTPException(500, "خطأ في توليد الأسئلة")
+        
+        # إضافة الحقول الافتراضية
+        for q in data.get("questions", []):
+            q_type = q.get("type")
             
-            if not data or "questions" not in data:
-                try:
-                    cleaned = res.text.replace("'", '"')
-                    cleaned = cleaned.replace("True", "true").replace("False", "false")
-                    data = json.loads(cleaned)
-                except Exception as e:
-                    print(f"JSON Error: {e}")
-                    raise HTTPException(500, "خطأ في معالجة إجابة النموذج")
+            if q_type == "multiple_choice":
+                if "correct_explanation" not in q:
+                    q["correct_explanation"] = "تفسير مفصل للإجابة الصحيحة."
+                if "wrong_explanations" not in q:
+                    q["wrong_explanations"] = ["تفسير غير متوفر"] * len(q.get("options", []))
             
-            # إضافة الحقول الافتراضية
-            for q in data.get("questions", []):
-                q_type = q.get("type")
-                
-                if q_type == "multiple_choice":
-                    if "correct_explanation" not in q:
-                        q["correct_explanation"] = "تفسير مفصل للإجابة الصحيحة."
-                    if "wrong_explanations" not in q:
-                        q["wrong_explanations"] = ["تفسير غير متوفر"] * len(q.get("options", []))
-                
-                elif q_type == "true_false":
-                    if "correct_explanation" not in q:
-                        q["correct_explanation"] = f"العبارة {'صحيحة' if q.get('answer') else 'خاطئة'}."
-                    if "correction" not in q:
-                        q["correction"] = ""
-                
-                elif q_type == "fill_blank":
-                    if "correct_explanation" not in q:
-                        q["correct_explanation"] = "تفسير مفصل للإجابة الصحيحة."
-                    if "alternatives" not in q:
-                        q["alternatives"] = []
+            elif q_type == "true_false":
+                if "correct_explanation" not in q:
+                    q["correct_explanation"] = f"العبارة {'صحيحة' if q.get('answer') else 'خاطئة'}."
+                if "correction" not in q:
+                    q["correction"] = ""
             
-            out.extend(data["questions"][:need])
-            
-        except Exception as e:
-            raise HTTPException(500, f"خطأ في توليد الأسئلة من PDF: {str(e)}")
+            elif q_type == "fill_blank":
+                if "correct_explanation" not in q:
+                    q["correct_explanation"] = "تفسير مفصل للإجابة الصحيحة."
+                if "alternatives" not in q:
+                    q["alternatives"] = []
+        
+        out.extend(data["questions"][:need])
 
     return {"questions": out[:total]}
 
