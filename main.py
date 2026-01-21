@@ -1,5 +1,6 @@
 import os, json, math, itertools, secrets
 from datetime import datetime, timedelta
+from typing import List, Optional
 from fastapi import FastAPI, HTTPException, Header, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -50,85 +51,15 @@ def safe_json(text: str):
     except:
         return None
 
-def build_prompt(topic, count):
-    return f"""
-أنت نظام يولّد JSON فقط.
-ممنوع كتابة أي نص خارج JSON.
-
-أنشئ {count} سؤال اختيار من متعدد.
-
-الصيغة:
-{{
- "questions":[
-  {{
-   "q":"",
-   "options":["","","",""],
-   "answer":0,
-   "explanations":["","","",""]
-  }}
- ]
-}}
-
-الموضوع:
-{topic}
-"""
-
-def build_prompt_from_text(text, count):
-    return f"""
-أنت نظام يولّد JSON فقط.
-ممنوع كتابة أي نص خارج JSON.
-
-اعتمد فقط على النص التالي:
-
-{text}
-
-أعد الناتج النهائي بهذه الصيغة فقط:
-{{
- "questions":[
-  {{
-   "q":"",
-   "options":["","","",""],
-   "answer":0,
-   "explanations":["","","",""]
-  }}
- ]
-}}
-
-عدد الأسئلة: {count}
-"""
-
-def extract_text_from_pdf(file):
-    text = ""
-    with pdfplumber.open(file) as pdf:
-        for page in pdf.pages:
-            text += page.extract_text() or ""
-    text = text.strip()
-    if len(text) > MAX_TEXT_CHARS:
-        text = text[:MAX_TEXT_CHARS]
-    return text
-
-def extract_text_from_image_ai(file):
-    image = Image.open(file).convert("RGB")
-    model = get_model()
-    prompt = "استخرج النص الموجود في الصورة بدقة وأعد النص فقط."
-    res = model.generate_content([prompt, image])
-    text = res.text.strip()
-    if len(text) > MAX_TEXT_CHARS:
-        text = text[:MAX_TEXT_CHARS]
-    return text
-
-app = FastAPI()
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+class QuestionTypes(BaseModel):
+    multiple_choice: bool = True
+    true_false: bool = False
+    fill_blank: bool = False
 
 class GenerateReq(BaseModel):
     topic: str
     total_questions: int = 10
+    question_types: QuestionTypes
 
 class CreateLicense(BaseModel):
     days: int = 30
@@ -164,6 +95,136 @@ def admin_check(key):
     if key != ADMIN_SECRET:
         raise HTTPException(403, "Forbidden")
 
+def build_prompt(topic: str, count: int, q_types: QuestionTypes):
+    type_instructions = []
+    
+    if q_types.multiple_choice:
+        type_instructions.append("اختيار من متعدد: سؤال مع 4 خيارات وإجابة واحدة صحيحة")
+    if q_types.true_false:
+        type_instructions.append("صح/خطأ: سؤال بعبارة تكون إما صحيحة أو خاطئة")
+    if q_types.fill_blank:
+        type_instructions.append("أكمل الفراغ: جملة ناقصة بكلمة أو عبارة مع ذكر مكانها")
+
+    types_str = "، ".join(type_instructions)
+    
+    return f"""
+أنت نظام يولّد أسئلة اختبارية فقط.
+ممنوع كتابة أي نص خارج JSON.
+
+أنشئ {count} سؤالاً بأنواع مختلفة حسب الطلب.
+أنواع الأسئلة المطلوبة: {types_str}
+
+يجب أن يكون توزيع الأسئلة متساوياً قدر الإمكان بين الأنواع المحددة.
+
+للأسئلة من نوع "أكمل الفراغ":
+- يجب أن تكون الجملة واضحة ودقيقة جداً جداً
+- استخدم (...) أو _____ للإشارة إلى الفراغ
+- يجب أن تكون الإجابة دقيقة ومحددة
+- قدم تفسيراً للإجابة الصحيحة
+
+الصيغة JSON المطلوبة:
+{{
+ "questions":[
+  {{
+   "type": "multiple_choice" أو "true_false" أو "fill_blank",
+   "q": "نص السؤال",
+   "options": ["خيار1", "خيار2", "خيار3", "خيار4"] (للاختيار المتعدد فقط),
+   "answer": 0 (رقم الخيار الصحيح للاختيار المتعدد) أو true/false (لصح/خطأ) أو "النص الصحيح" (لأكمل الفراغ),
+   "explanations": ["تفسير1", "تفسير2", "تفسير3", "تفسير4"] (للاختيار المتعدد) أو "التفسير" (لصح/خطأ وأكمل الفراغ)
+  }}
+ ]
+}}
+
+الموضوع:
+{topic}
+
+تأكد من:
+1. دقة عالية في المحتوى
+2. تنوع في الأسئلة
+3. وضوح في الصياغة
+4. إجابات دقيقة ومحددة
+"""
+
+def build_prompt_from_text(text: str, count: int, q_types: QuestionTypes):
+    type_instructions = []
+    
+    if q_types.multiple_choice:
+        type_instructions.append("اختيار من متعدد")
+    if q_types.true_false:
+        type_instructions.append("صح/خطأ")
+    if q_types.fill_blank:
+        type_instructions.append("أكمل الفراغ")
+
+    types_str = "، ".join(type_instructions)
+    
+    return f"""
+أنت نظام يولّد أسئلة اختبارية فقط.
+ممنوع كتابة أي نص خارج JSON.
+
+اعتمد فقط على النص التالي:
+
+{text}
+
+أنشئ {count} سؤالاً بأنواع مختلفة حسب الطلب.
+أنواع الأسئلة المطلوبة: {types_str}
+
+يجب أن يكون توزيع الأسئلة متساوياً قدر الإمكان بين الأنواع المحددة.
+
+للأسئلة من نوع "أكمل الفراغ":
+- يجب أن تكون الجملة واضحة ودقيقة جداً جداً
+- استخدم (...) أو _____ للإشارة إلى الفراغ
+- يجب أن تكون الإجابة دقيقة ومحددة
+- قدم تفسيراً للإجابة الصحيحة
+
+أعد الناتج النهائي بهذه الصيغة فقط:
+{{
+ "questions":[
+  {{
+   "type": "multiple_choice" أو "true_false" أو "fill_blank",
+   "q": "نص السؤال",
+   "options": ["خيار1", "خيار2", "خيار3", "خيار4"] (للاختيار المتعدد فقط),
+   "answer": 0 (للاختيار المتعدد) أو true/false (لصح/خطأ) أو "النص الصحيح" (لأكمل الفراغ),
+   "explanations": ["تفسير1", "تفسير2", "تفسير3", "تفسير4"] (للاختيار المتعدد) أو "التفسير" (لصح/خطأ وأكمل الفراغ)
+  }}
+ ]
+}}
+
+تأكد من:
+1. جميع الأسئلة مبنية على النص المقدم فقط
+2. دقة عالية في المعلومات
+3. تنوع في أنواع الأسئلة
+4. وضوح في الصياغة
+"""
+
+def extract_text_from_pdf(file):
+    text = ""
+    with pdfplumber.open(file) as pdf:
+        for page in pdf.pages:
+            text += page.extract_text() or ""
+    text = text.strip()
+    if len(text) > MAX_TEXT_CHARS:
+        text = text[:MAX_TEXT_CHARS]
+    return text
+
+def extract_text_from_image_ai(file):
+    image = Image.open(file).convert("RGB")
+    model = get_model()
+    prompt = "استخرج النص الموجود في الصورة بدقة وأعد النص فقط."
+    res = model.generate_content([prompt, image])
+    text = res.text.strip()
+    if len(text) > MAX_TEXT_CHARS:
+        text = text[:MAX_TEXT_CHARS]
+    return text
+
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 @app.get("/")
 def root():
     return {"status": "ok"}
@@ -176,6 +237,12 @@ def generate_manual(
 ):
     validate_license(license_key, device_id)
 
+    # تحقق من أن نوع سؤال واحد على الأقل محدد
+    if not (req.question_types.multiple_choice or 
+            req.question_types.true_false or 
+            req.question_types.fill_blank):
+        raise HTTPException(400, "يجب تحديد نوع سؤال واحد على الأقل")
+
     total = min(req.total_questions, MAX_TOTAL)
     batches = math.ceil(total / BATCH_SIZE)
     out = []
@@ -183,75 +250,137 @@ def generate_manual(
     for _ in range(batches):
         need = min(BATCH_SIZE, total - len(out))
         model = get_model()
-        res = model.generate_content(build_prompt(req.topic, need))
+        prompt = build_prompt(req.topic, need, req.question_types)
+        res = model.generate_content(prompt)
         data = safe_json(res.text)
+        
         if not data or "questions" not in data:
-            raise HTTPException(500, "Model error")
-        out.extend(data["questions"][:need])
+            # محاولة إصلاح JSON إذا كان فيه مشاكل
+            try:
+                cleaned_text = res.text.replace("'", '"')
+                data = json.loads(cleaned_text)
+            except:
+                raise HTTPException(500, "خطأ في توليد الأسئلة")
+        
+        # التحقق من صحة الهيكل
+        valid_questions = []
+        for q in data.get("questions", []):
+            if q.get("type") in ["multiple_choice", "true_false", "fill_blank"]:
+                valid_questions.append(q)
+        
+        out.extend(valid_questions[:need])
 
-    return {"questions": out}
+    return {"questions": out[:total]}
 
 @app.post("/generate/from-image")
 def generate_from_image(
     total_questions: int = 10,
+    multiple_choice: bool = True,
+    true_false: bool = False,
+    fill_blank: bool = False,
     file: UploadFile = File(...),
     license_key: str = Header(...),
     device_id: str = Header(...)
 ):
     validate_license(license_key, device_id)
 
+    if not (multiple_choice or true_false or fill_blank):
+        raise HTTPException(400, "يجب تحديد نوع سؤال واحد على الأقل")
+
     if not file.filename.lower().endswith((".png", ".jpg", ".jpeg")):
-        raise HTTPException(400, "Unsupported image type")
+        raise HTTPException(400, "نوع الصورة غير مدعوم")
 
     text = extract_text_from_image_ai(file.file)
     if not text or len(text) < 30:
-        raise HTTPException(400, "Text extraction failed")
+        raise HTTPException(400, "فشل استخراج النص من الصورة")
 
     total = min(total_questions, MAX_TOTAL)
     batches = math.ceil(total / BATCH_SIZE)
     out = []
 
+    question_types = QuestionTypes(
+        multiple_choice=multiple_choice,
+        true_false=true_false,
+        fill_blank=fill_blank
+    )
+
     for _ in range(batches):
         need = min(BATCH_SIZE, total - len(out))
         model = get_model()
-        res = model.generate_content(build_prompt_from_text(text, need))
+        prompt = build_prompt_from_text(text, need, question_types)
+        res = model.generate_content(prompt)
         data = safe_json(res.text)
+        
         if not data or "questions" not in data:
-            raise HTTPException(500, "Model error")
-        out.extend(data["questions"][:need])
+            try:
+                cleaned_text = res.text.replace("'", '"')
+                data = json.loads(cleaned_text)
+            except:
+                raise HTTPException(500, "خطأ في توليد الأسئلة")
+        
+        valid_questions = []
+        for q in data.get("questions", []):
+            if q.get("type") in ["multiple_choice", "true_false", "fill_blank"]:
+                valid_questions.append(q)
+        
+        out.extend(valid_questions[:need])
 
-    return {"questions": out}
+    return {"questions": out[:total]}
 
 @app.post("/generate/from-file")
 def generate_from_pdf(
     total_questions: int = 10,
+    multiple_choice: bool = True,
+    true_false: bool = False,
+    fill_blank: bool = False,
     file: UploadFile = File(...),
     license_key: str = Header(...),
     device_id: str = Header(...)
 ):
     validate_license(license_key, device_id)
 
+    if not (multiple_choice or true_false or fill_blank):
+        raise HTTPException(400, "يجب تحديد نوع سؤال واحد على الأقل")
+
     if not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(400, "Unsupported file type")
+        raise HTTPException(400, "نوع الملف غير مدعوم")
 
     text = extract_text_from_pdf(file.file)
     if not text or len(text) < 50:
-        raise HTTPException(400, "Text extraction failed")
+        raise HTTPException(400, "فشل استخراج النص من الملف")
 
     total = min(total_questions, MAX_TOTAL)
     batches = math.ceil(total / BATCH_SIZE)
     out = []
 
+    question_types = QuestionTypes(
+        multiple_choice=multiple_choice,
+        true_false=true_false,
+        fill_blank=fill_blank
+    )
+
     for _ in range(batches):
         need = min(BATCH_SIZE, total - len(out))
         model = get_model()
-        res = model.generate_content(build_prompt_from_text(text, need))
+        prompt = build_prompt_from_text(text, need, question_types)
+        res = model.generate_content(prompt)
         data = safe_json(res.text)
+        
         if not data or "questions" not in data:
-            raise HTTPException(500, "Model error")
-        out.extend(data["questions"][:need])
+            try:
+                cleaned_text = res.text.replace("'", '"')
+                data = json.loads(cleaned_text)
+            except:
+                raise HTTPException(500, "خطأ في توليد الأسئلة")
+        
+        valid_questions = []
+        for q in data.get("questions", []):
+            if q.get("type") in ["multiple_choice", "true_false", "fill_blank"]:
+                valid_questions.append(q)
+        
+        out.extend(valid_questions[:need])
 
-    return {"questions": out}
+    return {"questions": out[:total]}
 
 @app.post("/admin/create")
 def admin_create(data: CreateLicense, x_admin_key: str = Header(...)):
@@ -310,3 +439,7 @@ def admin_delete(key: str, x_admin_key: str = Header(...)):
     db = [l for l in load_db() if l["license_key"] != key]
     save_db(db)
     return {"status": "deleted"}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
