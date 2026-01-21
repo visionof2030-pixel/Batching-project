@@ -99,101 +99,146 @@ def build_prompt(topic: str, count: int, q_types: QuestionTypes):
     type_instructions = []
     
     if q_types.multiple_choice:
-        type_instructions.append("اختيار من متعدد: سؤال مع 4 خيارات وإجابة واحدة صحيحة")
+        type_instructions.append("""
+اختيار من متعدد:
+- سؤال مع 4 خيارات
+- إجابة واحدة صحيحة فقط
+- قدم شرحاً مفصلاً للإجابة الصحيحة (لماذا هذه الإجابة صحيحة؟)
+- قدم شرحاً مفصلاً لكل خيار خاطئ (لماذا هذا الخيار غير صحيح؟)
+- تأكد من أن الخيارات متقاربة ومربكة بعض الشيء
+- استخدم نبرة تعليمية في الشروحات
+""")
+    
     if q_types.true_false:
-        type_instructions.append("صح/خطأ: سؤال بعبارة تكون إما صحيحة أو خاطئة")
+        type_instructions.append("""
+صح/خطأ:
+- عبارة تكون إما صحيحة أو خاطئة
+- قدم شرحاً مفصلاً للإجابة (لماذا العبارة صحيحة أو خاطئة؟)
+- إذا كانت العبارة خاطئة، صححها واشرح السبب
+- قدم أمثلة توضيحية إذا لزم الأمر
+""")
+    
     if q_types.fill_blank:
-        type_instructions.append("أكمل الفراغ: جملة ناقصة بكلمة أو عبارة مع ذكر مكانها")
+        type_instructions.append("""
+أكمل الفراغ:
+- جملة ناقصة بكلمة أو عبارة
+- استخدم _____ أو (...) للإشارة إلى الفراغ
+- قدم الإجابة الصحيحة
+- قدم شرحاً مفصلاً لماذا هذه الإجابة صحيحة
+- اذكر بدائل مقبولة إذا وجدت
+- قدم أمثلة على استخدام الكلمة في سياقات مختلفة
+""")
 
-    types_str = "، ".join(type_instructions)
+    types_str = "\n".join(type_instructions)
     
     return f"""
-أنت نظام يولّد أسئلة اختبارية فقط.
-ممنوع كتابة أي نص خارج JSON.
+أنت نظام توليد أسئلة تعليمية ذكي.
+مهمتك إنشاء أسئلة اختبارية عالية الجودة مع شروحات مفصلة.
 
-أنشئ {count} سؤالاً بأنواع مختلفة حسب الطلب.
-أنواع الأسئلة المطلوبة: {types_str}
+{types_str}
 
-يجب أن يكون توزيع الأسئلة متساوياً قدر الإمكان بين الأنواع المحددة.
+عدد الأسئلة المطلوب: {count}
+الموضوع: {topic}
 
-للأسئلة من نوع "أكمل الفراغ":
-- يجب أن تكون الجملة واضحة ودقيقة جداً جداً
-- استخدم (...) أو _____ للإشارة إلى الفراغ
-- يجب أن تكون الإجابة دقيقة ومحددة
-- قدم تفسيراً للإجابة الصحيحة
+**متطلبات إضافية مهمة:**
+1. كل سؤال يجب أن يكون واضحاً ودقيقاً
+2. الشروحات يجب أن تكون تعليمية ومفصلة
+3. للخيارات الخاطئة: اشرح سبب الخطأ بشكل واضح
+4. استخدم لغة عربية سليمة وفصيحة
+5. قدم أمثلة توضيحية عندما يكون ذلك مناسباً
+6. تأكد من صحة المعلومات المقدمة
 
-الصيغة JSON المطلوبة:
+**صيغة JSON المطلوبة بدقة:**
 {{
- "questions":[
-  {{
-   "type": "multiple_choice" أو "true_false" أو "fill_blank",
-   "q": "نص السؤال",
-   "options": ["خيار1", "خيار2", "خيار3", "خيار4"] (للاختيار المتعدد فقط),
-   "answer": 0 (رقم الخيار الصحيح للاختيار المتعدد) أو true/false (لصح/خطأ) أو "النص الصحيح" (لأكمل الفراغ),
-   "explanations": ["تفسير1", "تفسير2", "تفسير3", "تفسير4"] (للاختيار المتعدد) أو "التفسير" (لصح/خطأ وأكمل الفراغ)
-  }}
- ]
+  "questions": [
+    {{
+      "type": "multiple_choice",
+      "q": "نص السؤال هنا",
+      "options": ["الخيار الأول", "الخيار الثاني", "الخيار الثالث", "الخيار الرابع"],
+      "answer": 0,  // رقم الخيار الصحيح (0-3)
+      "correct_explanation": "شرح مفصّل للإجابة الصحيحة. اشرح لماذا هذه الإجابة صحيحة بأسلوب تعليمي. قدم أمثلة إذا لزم الأمر.",
+      "wrong_explanations": [
+        "شرح مفصّل لسبب خطأ الخيار الأول. اشرح لماذا هذا الخيار غير صحيح.",
+        "شرح مفصّل لسبب خطأ الخيار الثاني. اشرح لماذا هذا الخيار غير صحيح.",
+        "شرح مفصّل لسبب خطأ الخيار الثالث. اشرح لماذا هذا الخيار غير صحيح.",
+        "شرح مفصّل لسبب خطأ الخيار الرابع. اشرح لماذا هذا الخيار غير صحيح."
+      ]
+    }},
+    {{
+      "type": "true_false",
+      "q": "العبارة هنا",
+      "answer": true,  // أو false
+      "correct_explanation": "شرح مفصّل للإجابة. اشرح لماذا العبارة صحيحة أو خاطئة.",
+      "correction": "إذا كانت العبارة خاطئة، قدم التصحيح هنا"
+    }},
+    {{
+      "type": "fill_blank",
+      "q": "الجملة مع _____ هنا",
+      "answer": "الإجابة الصحيحة",
+      "correct_explanation": "شرح مفصّل للإجابة. اشرح لماذا هذه الإجابة صحيحة.",
+      "alternatives": ["بديل1", "بديل2"]  // إن وجدت
+    }}
+  ]
 }}
-
-الموضوع:
-{topic}
-
-تأكد من:
-1. دقة عالية في المحتوى
-2. تنوع في الأسئلة
-3. وضوح في الصياغة
-4. إجابات دقيقة ومحددة
 """
 
 def build_prompt_from_text(text: str, count: int, q_types: QuestionTypes):
     type_instructions = []
     
     if q_types.multiple_choice:
-        type_instructions.append("اختيار من متعدد")
+        type_instructions.append("اختيار من متعدد مع شروحات مفصلة")
     if q_types.true_false:
-        type_instructions.append("صح/خطأ")
+        type_instructions.append("صح/خطأ مع شروحات مفصلة")
     if q_types.fill_blank:
-        type_instructions.append("أكمل الفراغ")
+        type_instructions.append("أكمل الفراغ مع شروحات مفصلة")
 
     types_str = "، ".join(type_instructions)
     
     return f"""
-أنت نظام يولّد أسئلة اختبارية فقط.
-ممنوع كتابة أي نص خارج JSON.
+أنت نظام توليد أسئلة تعليمية ذكي.
+مهمتك إنشاء أسئلة اختبارية عالية الجودة مع شروحات مفصلة.
 
-اعتمد فقط على النص التالي:
-
-{text}
-
-أنشئ {count} سؤالاً بأنواع مختلفة حسب الطلب.
 أنواع الأسئلة المطلوبة: {types_str}
 
-يجب أن يكون توزيع الأسئلة متساوياً قدر الإمكان بين الأنواع المحددة.
+النص المصدر:
+{text[:4000]}
 
-للأسئلة من نوع "أكمل الفراغ":
-- يجب أن تكون الجملة واضحة ودقيقة جداً جداً
-- استخدم (...) أو _____ للإشارة إلى الفراغ
-- يجب أن تكون الإجابة دقيقة ومحددة
-- قدم تفسيراً للإجابة الصحيحة
+عدد الأسئلة المطلوب: {count}
 
-أعد الناتج النهائي بهذه الصيغة فقط:
+**تعليمات مهمة:**
+1. جميع الأسئلة يجب أن تكون مبنية على النص المصدر فقط
+2. قدم شروحات مفصلة وتعليمية لكل سؤال
+3. للخيارات الخاطئة: اشرح سبب الخطأ بوضوح
+4. استخرج المعلومات الرئيسية من النص
+5. تأكد من دقة المعلومات بناءً على النص
+
+**تنسيق JSON النهائي:**
 {{
- "questions":[
-  {{
-   "type": "multiple_choice" أو "true_false" أو "fill_blank",
-   "q": "نص السؤال",
-   "options": ["خيار1", "خيار2", "خيار3", "خيار4"] (للاختيار المتعدد فقط),
-   "answer": 0 (للاختيار المتعدد) أو true/false (لصح/خطأ) أو "النص الصحيح" (لأكمل الفراغ),
-   "explanations": ["تفسير1", "تفسير2", "تفسير3", "تفسير4"] (للاختيار المتعدد) أو "التفسير" (لصح/خطأ وأكمل الفراغ)
-  }}
- ]
+  "questions": [
+    {{
+      "type": "multiple_choice",
+      "q": "سؤال مبنى على النص",
+      "options": ["خيار1", "خيار2", "خيار3", "خيار4"],
+      "answer": 0,
+      "correct_explanation": "شرح مفصّل",
+      "wrong_explanations": ["شرح1", "شرح2", "شرح3", "شرح4"]
+    }},
+    {{
+      "type": "true_false",
+      "q": "عبارة عن النص",
+      "answer": true,
+      "correct_explanation": "شرح مفصّل",
+      "correction": "التصحيح إذا لزم"
+    }},
+    {{
+      "type": "fill_blank",
+      "q": "جملة عن النص مع _____",
+      "answer": "إجابة",
+      "correct_explanation": "شرح مفصّل",
+      "alternatives": []
+    }}
+  ]
 }}
-
-تأكد من:
-1. جميع الأسئلة مبنية على النص المقدم فقط
-2. دقة عالية في المعلومات
-3. تنوع في أنواع الأسئلة
-4. وضوح في الصياغة
 """
 
 def extract_text_from_pdf(file):
@@ -237,7 +282,6 @@ def generate_manual(
 ):
     validate_license(license_key, device_id)
 
-    # تحقق من أن نوع سؤال واحد على الأقل محدد
     if not (req.question_types.multiple_choice or 
             req.question_types.true_false or 
             req.question_types.fill_blank):
@@ -251,24 +295,55 @@ def generate_manual(
         need = min(BATCH_SIZE, total - len(out))
         model = get_model()
         prompt = build_prompt(req.topic, need, req.question_types)
-        res = model.generate_content(prompt)
-        data = safe_json(res.text)
         
-        if not data or "questions" not in data:
-            # محاولة إصلاح JSON إذا كان فيه مشاكل
-            try:
-                cleaned_text = res.text.replace("'", '"')
-                data = json.loads(cleaned_text)
-            except:
-                raise HTTPException(500, "خطأ في توليد الأسئلة")
-        
-        # التحقق من صحة الهيكل
-        valid_questions = []
-        for q in data.get("questions", []):
-            if q.get("type") in ["multiple_choice", "true_false", "fill_blank"]:
-                valid_questions.append(q)
-        
-        out.extend(valid_questions[:need])
+        try:
+            res = model.generate_content(prompt)
+            data = safe_json(res.text)
+            
+            if not data or "questions" not in data:
+                # محاولة إصلاح JSON
+                try:
+                    cleaned = res.text
+                    cleaned = cleaned.replace("'", '"')
+                    cleaned = cleaned.replace("True", "true").replace("False", "false")
+                    start = cleaned.find('{')
+                    end = cleaned.rfind('}') + 1
+                    if start != -1 and end != -1:
+                        data = json.loads(cleaned[start:end])
+                    else:
+                        raise HTTPException(500, "تعذر تحويل الإجابة إلى JSON")
+                except Exception as e:
+                    print(f"JSON Parse Error: {e}")
+                    raise HTTPException(500, "خطأ في معالجة الإجابة من النموذج")
+            
+            # التحقق من صحة الهيكل وإضافة الحقول الافتراضية
+            for q in data.get("questions", []):
+                q_type = q.get("type")
+                
+                if q_type == "multiple_choice":
+                    if "correct_explanation" not in q:
+                        q["correct_explanation"] = "تفسير مفصل للإجابة الصحيحة."
+                    if "wrong_explanations" not in q:
+                        q["wrong_explanations"] = ["تفسير غير متوفر"] * len(q.get("options", []))
+                
+                elif q_type == "true_false":
+                    if "correct_explanation" not in q:
+                        q["correct_explanation"] = f"العبارة {'صحيحة' if q.get('answer') else 'خاطئة'}."
+                    if "correction" not in q:
+                        q["correction"] = ""
+                
+                elif q_type == "fill_blank":
+                    if "correct_explanation" not in q:
+                        q["correct_explanation"] = "تفسير مفصل للإجابة الصحيحة."
+                    if "alternatives" not in q:
+                        q["alternatives"] = []
+            
+            out.extend(data["questions"][:need])
+            
+        except Exception as e:
+            if isinstance(e, HTTPException):
+                raise e
+            raise HTTPException(500, f"خطأ في توليد الأسئلة: {str(e)}")
 
     return {"questions": out[:total]}
 
@@ -313,17 +388,35 @@ def generate_from_image(
         
         if not data or "questions" not in data:
             try:
-                cleaned_text = res.text.replace("'", '"')
-                data = json.loads(cleaned_text)
+                cleaned = res.text.replace("'", '"')
+                cleaned = cleaned.replace("True", "true").replace("False", "false")
+                data = json.loads(cleaned)
             except:
                 raise HTTPException(500, "خطأ في توليد الأسئلة")
         
-        valid_questions = []
+        # إضافة الحقول الافتراضية
         for q in data.get("questions", []):
-            if q.get("type") in ["multiple_choice", "true_false", "fill_blank"]:
-                valid_questions.append(q)
+            q_type = q.get("type")
+            
+            if q_type == "multiple_choice":
+                if "correct_explanation" not in q:
+                    q["correct_explanation"] = "تفسير مفصل للإجابة الصحيحة."
+                if "wrong_explanations" not in q:
+                    q["wrong_explanations"] = ["تفسير غير متوفر"] * len(q.get("options", []))
+            
+            elif q_type == "true_false":
+                if "correct_explanation" not in q:
+                    q["correct_explanation"] = f"العبارة {'صحيحة' if q.get('answer') else 'خاطئة'}."
+                if "correction" not in q:
+                    q["correction"] = ""
+            
+            elif q_type == "fill_blank":
+                if "correct_explanation" not in q:
+                    q["correct_explanation"] = "تفسير مفصل للإجابة الصحيحة."
+                if "alternatives" not in q:
+                    q["alternatives"] = []
         
-        out.extend(valid_questions[:need])
+        out.extend(data["questions"][:need])
 
     return {"questions": out[:total]}
 
@@ -368,17 +461,35 @@ def generate_from_pdf(
         
         if not data or "questions" not in data:
             try:
-                cleaned_text = res.text.replace("'", '"')
-                data = json.loads(cleaned_text)
+                cleaned = res.text.replace("'", '"')
+                cleaned = cleaned.replace("True", "true").replace("False", "false")
+                data = json.loads(cleaned)
             except:
                 raise HTTPException(500, "خطأ في توليد الأسئلة")
         
-        valid_questions = []
+        # إضافة الحقول الافتراضية
         for q in data.get("questions", []):
-            if q.get("type") in ["multiple_choice", "true_false", "fill_blank"]:
-                valid_questions.append(q)
+            q_type = q.get("type")
+            
+            if q_type == "multiple_choice":
+                if "correct_explanation" not in q:
+                    q["correct_explanation"] = "تفسير مفصل للإجابة الصحيحة."
+                if "wrong_explanations" not in q:
+                    q["wrong_explanations"] = ["تفسير غير متوفر"] * len(q.get("options", []))
+            
+            elif q_type == "true_false":
+                if "correct_explanation" not in q:
+                    q["correct_explanation"] = f"العبارة {'صحيحة' if q.get('answer') else 'خاطئة'}."
+                if "correction" not in q:
+                    q["correction"] = ""
+            
+            elif q_type == "fill_blank":
+                if "correct_explanation" not in q:
+                    q["correct_explanation"] = "تفسير مفصل للإجابة الصحيحة."
+                if "alternatives" not in q:
+                    q["alternatives"] = []
         
-        out.extend(valid_questions[:need])
+        out.extend(data["questions"][:need])
 
     return {"questions": out[:total]}
 
