@@ -49,7 +49,7 @@ def safe_json(text: str):
     except:
         return None
 
-def build_prompt(topic, lang, count):
+def build_prompt(topic, count):
     return f"""
 أنشئ {count} سؤال اختيار من متعدد.
 
@@ -69,7 +69,7 @@ def build_prompt(topic, lang, count):
 {topic}
 """
 
-def build_prompt_from_text(text, lang, count):
+def build_prompt_from_text(text, count):
     return f"""
 اعتمد فقط على النص التالي دون إضافة أي معلومات خارجية:
 
@@ -103,7 +103,6 @@ app.add_middleware(
 
 class GenerateReq(BaseModel):
     topic: str
-    language: str = "ar"
     total_questions: int = 10
 
 class CreateLicense(BaseModel):
@@ -129,4 +128,160 @@ def validate_license(license_key, device_id):
             if l["bound_device"] is None:
                 l["bound_device"] = device_id
             elif l["bound_device"] != device_id:
-                raise HTTPException(403, "License used on another
+                raise HTTPException(403, "License used on another device")
+            l["used_requests"] += 1
+            l["last_request_at"] = now().isoformat()
+            save_db(db)
+            return
+    raise HTTPException(403, "Invalid license")
+
+def admin_check(key):
+    if key != ADMIN_SECRET:
+        raise HTTPException(403, "Forbidden")
+
+@app.get("/")
+def root():
+    return {"status": "ok"}
+
+@app.post("/generate/batch")
+def generate_manual(
+    req: GenerateReq,
+    license_key: str = Header(...),
+    device_id: str = Header(...)
+):
+    validate_license(license_key, device_id)
+
+    total = min(req.total_questions, MAX_TOTAL)
+    batches = math.ceil(total / BATCH_SIZE)
+    out = []
+
+    for _ in range(batches):
+        need = min(BATCH_SIZE, total - len(out))
+        model = get_model()
+        res = model.generate_content(build_prompt(req.topic, need))
+        data = safe_json(res.text)
+        if not data:
+            raise HTTPException(500, "Model error")
+        out.extend(data["questions"][:need])
+
+    return {"questions": out}
+
+@app.post("/generate/from-image")
+def generate_from_image(
+    total_questions: int = 10,
+    file: UploadFile = File(...),
+    license_key: str = Header(...),
+    device_id: str = Header(...)
+):
+    validate_license(license_key, device_id)
+
+    if not file.filename.lower().endswith((".png", ".jpg", ".jpeg")):
+        raise HTTPException(400, "Unsupported image type")
+
+    text = extract_text_from_image_ai(file.file)
+    if not text or len(text) < 30:
+        raise HTTPException(400, "Text extraction failed")
+
+    total = min(total_questions, MAX_TOTAL)
+    batches = math.ceil(total / BATCH_SIZE)
+    out = []
+
+    for _ in range(batches):
+        need = min(BATCH_SIZE, total - len(out))
+        model = get_model()
+        res = model.generate_content(build_prompt_from_text(text, need))
+        data = safe_json(res.text)
+        if not data:
+            raise HTTPException(500, "Model error")
+        out.extend(data["questions"][:need])
+
+    return {"questions": out}
+
+@app.post("/generate/from-file")
+def generate_from_pdf(
+    total_questions: int = 10,
+    file: UploadFile = File(...),
+    license_key: str = Header(...),
+    device_id: str = Header(...)
+):
+    validate_license(license_key, device_id)
+
+    if not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(400, "Unsupported file type")
+
+    text = extract_text_from_pdf(file.file)
+    if not text or len(text) < 50:
+        raise HTTPException(400, "Text extraction failed")
+
+    total = min(total_questions, MAX_TOTAL)
+    batches = math.ceil(total / BATCH_SIZE)
+    out = []
+
+    for _ in range(batches):
+        need = min(BATCH_SIZE, total - len(out))
+        model = get_model()
+        res = model.generate_content(build_prompt_from_text(text, need))
+        data = safe_json(res.text)
+        if not data:
+            raise HTTPException(500, "Model error")
+        out.extend(data["questions"][:need])
+
+    return {"questions": out}
+
+@app.post("/admin/create")
+def admin_create(data: CreateLicense, x_admin_key: str = Header(...)):
+    admin_check(x_admin_key)
+    db = load_db()
+    key = "ST-" + secrets.token_hex(6).upper()
+    db.append({
+        "license_key": key,
+        "expires_at": (now() + timedelta(days=data.days)).isoformat(),
+        "max_requests": data.max_requests,
+        "used_requests": 0,
+        "bound_device": None,
+        "is_active": True,
+        "owner": data.owner,
+        "created_at": now().isoformat(),
+        "last_request_at": None
+    })
+    save_db(db)
+    return {"license_key": key}
+
+@app.get("/admin/licenses")
+def admin_list(x_admin_key: str = Header(...)):
+    admin_check(x_admin_key)
+    return load_db()
+
+@app.put("/admin/update/{key}")
+def admin_update(key: str, data: UpdateLicense, x_admin_key: str = Header(...)):
+    admin_check(x_admin_key)
+    db = load_db()
+    for l in db:
+        if l["license_key"] == key:
+            if data.days is not None:
+                l["expires_at"] = (now() + timedelta(days=data.days)).isoformat()
+            if data.max_requests is not None:
+                l["max_requests"] = data.max_requests
+            if data.is_active is not None:
+                l["is_active"] = data.is_active
+            save_db(db)
+            return {"status": "updated"}
+    raise HTTPException(404, "Not found")
+
+@app.post("/admin/reset-device/{key}")
+def admin_reset(key: str, x_admin_key: str = Header(...)):
+    admin_check(x_admin_key)
+    db = load_db()
+    for l in db:
+        if l["license_key"] == key:
+            l["bound_device"] = None
+            save_db(db)
+            return {"status": "reset"}
+    raise HTTPException(404, "Not found")
+
+@app.delete("/admin/delete/{key}")
+def admin_delete(key: str, x_admin_key: str = Header(...)):
+    admin_check(x_admin_key)
+    db = [l for l in load_db() if l["license_key"] != key]
+    save_db(db)
+    return {"status": "deleted"}
