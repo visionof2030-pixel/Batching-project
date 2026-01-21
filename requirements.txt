@@ -1,7 +1,9 @@
-fastapi
-uvicorn
-python-multipart
-pydantic
-google-generativeai
-Pillow
-pdfplumber
+fastapi==0.104.1
+uvicorn==0.24.0
+pydantic==2.5.0
+google-generativeai==0.3.0
+pillow==10.1.0
+pdfplumber==0.10.2
+python-multipart==0.0.6
+PyPDF2==3.0.0  # إضافة لتحسين قراءة PDF
+camelot-py[base]==0.11.0  # لاستخراج الجداول من PDF
