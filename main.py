@@ -10,6 +10,7 @@ import google.generativeai as genai
 MODEL = "gemini-2.5-flash-lite"
 BATCH_SIZE = 10
 MAX_TOTAL = 200
+MAX_TEXT_CHARS = 6000
 
 ADMIN_SECRET = os.getenv("ADMIN_SECRET")
 if not ADMIN_SECRET:
@@ -51,6 +52,9 @@ def safe_json(text: str):
 
 def build_prompt(topic, count):
     return f"""
+أنت نظام يولّد JSON فقط.
+ممنوع كتابة أي نص خارج JSON.
+
 أنشئ {count} سؤال اختيار من متعدد.
 
 الصيغة:
@@ -71,11 +75,26 @@ def build_prompt(topic, count):
 
 def build_prompt_from_text(text, count):
     return f"""
-اعتمد فقط على النص التالي دون إضافة أي معلومات خارجية:
+أنت نظام يولّد JSON فقط.
+ممنوع كتابة أي نص خارج JSON.
+
+اعتمد فقط على النص التالي:
 
 {text}
 
-أنشئ {count} سؤال اختيار من متعدد بنفس الصيغة المعروفة.
+أعد الناتج النهائي بهذه الصيغة فقط:
+{{
+ "questions":[
+  {{
+   "q":"",
+   "options":["","","",""],
+   "answer":0,
+   "explanations":["","","",""]
+  }}
+ ]
+}}
+
+عدد الأسئلة: {count}
 """
 
 def extract_text_from_pdf(file):
@@ -83,14 +102,20 @@ def extract_text_from_pdf(file):
     with pdfplumber.open(file) as pdf:
         for page in pdf.pages:
             text += page.extract_text() or ""
-    return text.strip()
+    text = text.strip()
+    if len(text) > MAX_TEXT_CHARS:
+        text = text[:MAX_TEXT_CHARS]
+    return text
 
 def extract_text_from_image_ai(file):
     image = Image.open(file).convert("RGB")
     model = get_model()
     prompt = "استخرج النص الموجود في الصورة بدقة وأعد النص فقط."
     res = model.generate_content([prompt, image])
-    return res.text.strip()
+    text = res.text.strip()
+    if len(text) > MAX_TEXT_CHARS:
+        text = text[:MAX_TEXT_CHARS]
+    return text
 
 app = FastAPI()
 
@@ -160,7 +185,7 @@ def generate_manual(
         model = get_model()
         res = model.generate_content(build_prompt(req.topic, need))
         data = safe_json(res.text)
-        if not data:
+        if not data or "questions" not in data:
             raise HTTPException(500, "Model error")
         out.extend(data["questions"][:need])
 
@@ -191,7 +216,7 @@ def generate_from_image(
         model = get_model()
         res = model.generate_content(build_prompt_from_text(text, need))
         data = safe_json(res.text)
-        if not data:
+        if not data or "questions" not in data:
             raise HTTPException(500, "Model error")
         out.extend(data["questions"][:need])
 
@@ -222,7 +247,7 @@ def generate_from_pdf(
         model = get_model()
         res = model.generate_content(build_prompt_from_text(text, need))
         data = safe_json(res.text)
-        if not data:
+        if not data or "questions" not in data:
             raise HTTPException(500, "Model error")
         out.extend(data["questions"][:need])
 
